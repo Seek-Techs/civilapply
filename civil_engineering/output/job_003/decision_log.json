@@ -1,0 +1,45 @@
+[
+  {
+    "type": "project_alignment",
+    "strength": "strong",
+    "direct_overlap": [
+      "buildings"
+    ],
+    "adjacent_matches": [],
+    "adjacency_score": 0.0,
+    "cv_only_projects": [
+      "industrial",
+      "infrastructure"
+    ],
+    "job_only_projects": [],
+    "weight": 0.6,
+    "reason": "Direct project experience overlap found."
+  },
+  {
+    "type": "seniority_fit",
+    "value": "underqualified",
+    "years_required": 12,
+    "experience_years": 11,
+    "weight": 0.25,
+    "reason": "Candidate is underqualified for this role."
+  },
+  {
+    "type": "risk_assessment",
+    "flags": [
+      "experience_gap"
+    ],
+    "weight": 0.15,
+    "reason": "Role involves elevated risk or experience gaps."
+  },
+  {
+    "type": "confidence_score",
+    "overall_confidence": 20,
+    "breakdown": {
+      "project_alignment": 40,
+      "seniority_fit": 0,
+      "skills_match": 0,
+      "risk_penalty": -20
+    },
+    "verdict": "Do not apply"
+  }
+]

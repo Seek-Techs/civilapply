@@ -1,0 +1,37 @@
+[
+  {
+    "type": "project_alignment",
+    "strength": "strong",
+    "direct_overlap": [
+      "infrastructure"
+    ],
+    "adjacent_matches": [],
+    "adjacency_score": 0.0,
+    "cv_only_projects": [
+      "buildings",
+      "industrial"
+    ],
+    "job_only_projects": [],
+    "weight": 0.6,
+    "reason": "Direct project experience overlap found."
+  },
+  {
+    "type": "seniority_fit",
+    "value": "tolerated_overqualified",
+    "years_required": 3,
+    "experience_years": 11,
+    "weight": 0.25,
+    "reason": "Candidate is tolerated_overqualified for this role."
+  },
+  {
+    "type": "confidence_score",
+    "overall_confidence": 60,
+    "breakdown": {
+      "project_alignment": 40,
+      "seniority_fit": 20,
+      "skills_match": 0,
+      "risk_penalty": 0
+    },
+    "verdict": "Apply with caution"
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "type": "project_alignment",
+    "strength": "strong",
+    "direct_overlap": [
+      "infrastructure"
+    ],
+    "adjacent_matches": [],
+    "adjacency_score": 0.0,
+    "cv_only_projects": [
+      "buildings",
+      "industrial"
+    ],
+    "job_only_projects": [],
+    "weight": 0.6,
+    "reason": "Direct project experience overlap found."
+  },
+  {
+    "type": "seniority_fit",
+    "value": "matched",
+    "years_required": 10,
+    "experience_years": 11,
+    "weight": 0.25,
+    "reason": "Experience level matches job expectations."
+  },
+  {
+    "type": "confidence_score",
+    "overall_confidence": 70,
+    "breakdown": {
+      "project_alignment": 40,
+      "seniority_fit": 30,
+      "skills_match": 0,
+      "risk_penalty": 0
+    },
+    "verdict": "Apply confidently"
+  }
+]

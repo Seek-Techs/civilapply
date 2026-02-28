@@ -1,0 +1,46 @@
+[
+  {
+    "job_id": "job_004",
+    "job_title": "Site Engineer",
+    "confidence": 70,
+    "rank": "strong_fit",
+    "decision": "auto_apply",
+    "platform": "linkedin",
+    "reason": "Confidence >= 70 and no safety flags",
+    "mode": "dry_run",
+    "timestamp": "2026-02-05T12:39:48.033255"
+  },
+  {
+    "job_id": "job_005",
+    "job_title": "Site Engineer",
+    "confidence": 70,
+    "rank": "strong_fit",
+    "decision": "auto_apply",
+    "platform": "linkedin",
+    "reason": "Confidence >= 70 and no safety flags",
+    "mode": "dry_run",
+    "timestamp": "2026-02-05T12:39:48.035539"
+  },
+  {
+    "job_id": "job_004",
+    "job_title": "Site Engineer",
+    "confidence": 70,
+    "rank": "strong_fit",
+    "decision": "auto_apply",
+    "platform": "linkedin",
+    "reason": "Confidence >= 70 and no safety flags",
+    "mode": "dry_run",
+    "timestamp": "2026-02-05T14:18:36.149117"
+  },
+  {
+    "job_id": "job_005",
+    "job_title": "Site Engineer",
+    "confidence": 70,
+    "rank": "strong_fit",
+    "decision": "auto_apply",
+    "platform": "linkedin",
+    "reason": "Confidence >= 70 and no safety flags",
+    "mode": "dry_run",
+    "timestamp": "2026-02-05T14:18:36.152679"
+  }
+]

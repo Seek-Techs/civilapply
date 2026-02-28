@@ -1,0 +1,28 @@
+{
+  "profile": {
+    "name": "Sikiru Yusuff Olatunji",
+    "title": "Civil Engineer",
+    "experience_years": 11
+  },
+  "experience": [
+    {
+      "role": "Project Monitoring Lead",
+      "company": "IPMC",
+      "bullets": [
+        "- Verified contractor-executed concrete and structural works",
+        "- Reviewed and certified contractor invoices",
+        "- Ensured compliance with HSE and QA/QC standards"
+      ]
+    }
+  ],
+  "skills": [
+    "site supervision",
+    "quantity verification",
+    "structural compliance",
+    "Excel",
+    "Power BI",
+    "Python",
+    "AutoCad",
+    "Prota Software"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "job_id": "job_004",
+  "job_title": "Site Engineer",
+  "confidence": 70,
+  "rank": "strong_fit",
+  "recommended_action": "apply_confidently",
+  "decision_summary": {
+    "project_alignment": "strong",
+    "seniority_fit": "matched",
+    "risk_flags": []
+  },
+  "human_decision": "approve",
+  "approved_at": "2026-02-04T14:43:28.053532"
+}

@@ -1,0 +1,27 @@
+{
+  "job_003": {
+    "confidence": 20,
+    "rank": "rejected",
+    "risk_flags": []
+  },
+  "job_004": {
+    "confidence": 70,
+    "rank": "strong_fit",
+    "risk_flags": []
+  },
+  "job_005": {
+    "confidence": 70,
+    "rank": "strong_fit",
+    "risk_flags": []
+  },
+  "job_001": {
+    "confidence": 60,
+    "rank": "strong_fit",
+    "risk_flags": []
+  },
+  "job_002": {
+    "confidence": 60,
+    "rank": "strong_fit",
+    "risk_flags": []
+  }
+}

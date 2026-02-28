@@ -1,0 +1,6 @@
+global_rank,job_id,job_title,confidence,rank,recommended_action,verdict
+1,job_004,Site Engineer,70,strong_fit,apply_confidently,Apply confidently
+2,job_005,Site Engineer,70,strong_fit,apply_confidently,Apply confidently
+3,job_001,Site Engineer,60,strong_fit,apply_confidently,Apply with caution
+4,job_002,Site Engineer,60,strong_fit,apply_confidently,Apply with caution
+5,job_003,Site Engineer/Civil Engineer,20,rejected,do_not_apply,Do not apply

@@ -1,0 +1,16 @@
+{
+  "job_id": "job_003",
+  "job_title": "Site Engineer/Civil Engineer",
+  "confidence": 20,
+  "rank": "rejected",
+  "recommended_action": "do_not_apply",
+  "decision_summary": {
+    "project_alignment": "strong",
+    "seniority_fit": "underqualified",
+    "risk_flags": [
+      "experience_gap"
+    ]
+  },
+  "human_decision": null,
+  "approved_at": null
+}

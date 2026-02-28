@@ -1,0 +1,74 @@
+[
+  {
+    "job_id": "job_003",
+    "job_title": "Site Engineer/Civil Engineer",
+    "final_decision": "reject",
+    "confidence": 20,
+    "signals": {
+      "confidence": 20,
+      "rank": "rejected",
+      "risk_flags": []
+    },
+    "rules_applied": [],
+    "blocks": [
+      "confidence_below_threshold"
+    ],
+    "human_override": null,
+    "summary": "reject chosen with confidence 20% after safety checks.",
+    "timestamp": "2026-02-10T12:44:03.705234"
+  },
+  {
+    "job_id": "job_003",
+    "job_title": "Site Engineer/Civil Engineer",
+    "final_decision": "reject",
+    "confidence": 20,
+    "signals": {
+      "confidence": 20,
+      "rank": "rejected",
+      "risk_flags": []
+    },
+    "rules_applied": [],
+    "blocks": [
+      "confidence_below_threshold"
+    ],
+    "human_override": null,
+    "summary": "reject chosen with confidence 20% after safety checks.",
+    "timestamp": "2026-02-10T12:58:46.428198"
+  },
+  {
+    "job_id": "job_003",
+    "job_title": "Site Engineer/Civil Engineer",
+    "final_decision": "reject",
+    "confidence": 20,
+    "signals": {
+      "confidence": 20,
+      "rank": "rejected",
+      "risk_flags": []
+    },
+    "rules_applied": [],
+    "blocks": [
+      "confidence_below_threshold"
+    ],
+    "human_override": null,
+    "summary": "reject chosen with confidence 20% after safety checks.",
+    "timestamp": "2026-02-10T13:07:29.013338"
+  },
+  {
+    "job_id": "job_003",
+    "job_title": "Site Engineer/Civil Engineer",
+    "final_decision": "reject",
+    "confidence": 20,
+    "signals": {
+      "confidence": 20,
+      "rank": "rejected",
+      "risk_flags": []
+    },
+    "rules_applied": [],
+    "blocks": [
+      "confidence_below_threshold"
+    ],
+    "human_override": null,
+    "summary": "reject chosen with confidence 20% after safety checks.",
+    "timestamp": "2026-02-10T13:07:48.851091"
+  }
+]

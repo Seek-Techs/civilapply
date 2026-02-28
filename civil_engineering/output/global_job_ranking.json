@@ -1,0 +1,42 @@
+[
+  {
+    "job_id": "job_003",
+    "job_title": "Site Engineer/Civil Engineer",
+    "confidence": 20,
+    "rank": "rejected",
+    "recommended_action": "do_not_apply",
+    "verdict": "Do not apply"
+  },
+  {
+    "job_id": "job_004",
+    "job_title": "Site Engineer",
+    "confidence": 70,
+    "rank": "strong_fit",
+    "recommended_action": "apply_confidently",
+    "verdict": "Apply confidently"
+  },
+  {
+    "job_id": "job_005",
+    "job_title": "Site Engineer",
+    "confidence": 70,
+    "rank": "strong_fit",
+    "recommended_action": "apply_confidently",
+    "verdict": "Apply confidently"
+  },
+  {
+    "job_id": "job_001",
+    "job_title": "Site Engineer",
+    "confidence": 60,
+    "rank": "strong_fit",
+    "recommended_action": "apply_confidently",
+    "verdict": "Apply with caution"
+  },
+  {
+    "job_id": "job_002",
+    "job_title": "Site Engineer",
+    "confidence": 60,
+    "rank": "strong_fit",
+    "recommended_action": "apply_confidently",
+    "verdict": "Apply with caution"
+  }
+]
