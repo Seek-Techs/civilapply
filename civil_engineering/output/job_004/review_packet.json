@@ -9,6 +9,6 @@
     "seniority_fit": "matched",
     "risk_flags": []
   },
-  "human_decision": "approve",
-  "approved_at": "2026-02-04T14:43:28.053532"
+  "human_decision": null,
+  "approved_at": null
 }

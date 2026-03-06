@@ -4,14 +4,18 @@
     "title": "Civil Engineer",
     "experience_years": 11
   },
+  "project_types": [
+    "buildings",
+    "infrastructure"
+  ],
   "experience": [
     {
       "role": "Project Monitoring Lead",
       "company": "IPMC",
       "bullets": [
-        "- Verified contractor-executed concrete and structural works, ensuring compliance with site safety procedures on infrastructure projects, ensuring compliance with site safety procedures on infrastructure projects, ensuring compliance with site safety procedures on buildings projects",
-        "- Reviewed and certified contractor invoices, in accordance with approved safety standards on infrastructure projects, in accordance with approved safety standards on infrastructure projects, in accordance with approved safety standards on buildings projects",
-        "- Ensured compliance with hse and qa/qc standards, under established site safety controls on infrastructure projects, under established site safety controls on infrastructure projects, under established site safety controls on buildings projects"
+        "- Verified contractor-executed concrete and structural works on buildings projects",
+        "- Reviewed and certified contractor invoices on buildings projects",
+        "- Ensured compliance with hse and qa/qc standards on buildings projects"
       ]
     }
   ],
@@ -21,13 +25,12 @@
     "Power BI",
     "Prota Software",
     "Python",
+    "hse",
+    "qa_qc",
     "quantity verification",
+    "quantity_verification",
     "site supervision",
     "structural compliance"
   ],
-  "project_types": [
-    "buildings",
-    "industrial",
-    "infrastructure"
-  ]
+  "risk_flags": []
 }

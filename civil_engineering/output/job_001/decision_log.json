@@ -8,8 +8,7 @@
     "adjacent_matches": [],
     "adjacency_score": 0.0,
     "cv_only_projects": [
-      "buildings",
-      "industrial"
+      "buildings"
     ],
     "job_only_projects": [],
     "weight": 0.6,

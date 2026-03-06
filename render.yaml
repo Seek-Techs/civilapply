@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: civilapply
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web:app --workers 2 --timeout 120 --bind 0.0.0.0:$PORT
+    disk:
+      name: civilapply-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: FLASK_SECRET
+        generateValue: true
+      - key: SMTP_EMAIL
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false

@@ -1,181 +1,215 @@
-# # civil_engineering/bullet_rewriter.py
-
-# def rewrite_bullets(bullets, profile, job, intelligence):
-#     """
-#     Rewrite CV bullets using deterministic rules.
-#     No hallucination. No new skills. No experience inflation.
-#     """
-
-#     rewritten = []
-
-#     for bullet in bullets:
-#         original = bullet
-#         text = bullet
-
-#         # -------------------------------
-#         # RULE GROUP 1 — SENIORITY SOFTENING
-#         # -------------------------------
-#         if intelligence.get("seniority") == "overqualified":
-#             text = soften_seniority(text)
-
-#         # -------------------------------
-#         # RULE GROUP 2 — SAFETY AWARENESS
-#         # -------------------------------
-#         if "high_safety_environment" in intelligence.get("risk_flags", []):
-#             text = add_safety_context(text)
-
-#         # -------------------------------
-#         # RULE GROUP 3 — PROJECT ALIGNMENT
-#         # -------------------------------
-#         text = align_project_type(text, job.project_types)
-
-#         # -------------------------------
-#         # RULE GROUP 4 — VERB NORMALIZATION
-#         # -------------------------------
-#         text = normalize_verbs(text)
-
-#         # -------------------------------
-#         # RULE GROUP 5 — SCOPE CLARITY
-#         # -------------------------------
-#         text = clarify_scope(text)
-
-#         rewritten.append(text)
-
-#     return rewritten
-
-
-# # =====================================================
-# # Helper functions (each handles ONE responsibility)
-# # =====================================================
-
-# def soften_seniority(text):
-#     replacements = {
-#         "led": "supervised",
-#         "managed": "coordinated",
-#         "headed": "oversaw",
-#         "commanded": "supervised",
-#         "spearheaded": "coordinated"
-#     }
-
-#     for k, v in replacements.items():
-#         text = text.replace(k, v).replace(k.capitalize(), v)
-
-#     return text
-
-
-# def add_safety_context(text):
-#     safety_phrases = [
-#         "ensuring compliance with safety procedures",
-#         "in line with approved method statements"
-#     ]
-
-#     # Only add if safety not already implied
-#     if "safety" not in text.lower():
-#         text = f"{text}, ensuring compliance with safety procedures"
-
-#     return text
-
-
-# def align_project_type(text, project_types):
-#     for project in project_types:
-#         if project.lower() in text.lower():
-#             return text
-
-#     if project_types:
-#         return f"{text} on {project_types[0].lower()} projects"
-
-#     return text
-
-
-# def normalize_verbs(text):
-#     verb_map = {
-#         "assisted": "supported",
-#         "single-handedly": "personally",
-#         "executed": "carried out"
-#     }
-
-#     for k, v in verb_map.items():
-#         text = text.replace(k, v).replace(k.capitalize(), v)
-
-#     return text
-
-
-# def clarify_scope(text):
-#     vague_phrases = ["responsible for", "involved in"]
-
-#     for phrase in vague_phrases:
-#         if phrase in text.lower():
-#             return text + " as part of assigned site responsibilities"
-
-#     return text
-
-
-
 # civil_engineering/cv_adapter/bullet_rewriter.py
+#
+# ── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+# Takes raw CV bullets and rewrites them to better match a specific job.
+# Uses deterministic rules only — NO hallucination, NO new skills invented.
+#
+# ── BUG FIXED: Unconditional safety phrase appended to every bullet ───────────
+# ORIGINAL CODE appended a safety phrase to EVERY bullet regardless of context:
+#
+#   if project:
+#       rewritten_bullet = f"{text}, {safety_phrase} on {project} projects"
+#   else:
+#       rewritten_bullet = f"{text}, {safety_phrase}"
+#
+# This produced absurd output like:
+#   "Reviewed and certified contractor invoices,
+#    ensuring compliance with site safety procedures on infrastructure projects"
+#
+# WHY IS THIS WRONG?
+# Safety context only makes sense for bullets about PHYSICAL site activities:
+# supervision, inspections, HSE, concrete works, etc.
+# It's meaningless — and sounds bizarre — appended to admin/financial bullets.
+#
+# FIX: Add a _is_site_activity() check. Only append safety context when the
+# bullet is about an activity that would realistically involve site safety.
+#
+# ── SENIOR DEV CONCEPT: "Guard clauses" ──────────────────────────────────────
+# Instead of wrapping logic in if/else blocks, we return early when conditions
+# aren't met. This keeps the "happy path" flat and readable.
+#
+# INSTEAD OF:
+#   if is_site_activity:
+#       do_thing()
+#   else:
+#       pass  # nothing
+#
+# USE:
+#   if not is_site_activity:
+#       return text        ← guard clause: bail early
+#   do_thing()
 
-# --- Phrase libraries (controlled, deterministic) ---
+# ── Constants at module level ─────────────────────────────────────────────────
+# WHY MODULE LEVEL?
+# Constants should never live inside functions. If they're inside a function,
+# they get re-created on every function call (wasteful) and can't be changed
+# from outside without editing the function itself.
 
 SAFETY_PHRASES = [
-    "ensuring compliance with site safety procedures",
-    "in accordance with approved safety standards",
-    "under established site safety controls",
+    "in line with approved site safety procedures",
+    "under established HSE controls",
+    "ensuring compliance with site safety standards",
 ]
 
-VERB_NORMALIZATION = {
+# Keywords that suggest a bullet describes a PHYSICAL site activity
+# (where safety context is genuinely relevant)
+#
+# DESIGN DECISION: "contractor" was removed even though it sounds site-related.
+# It also appears in admin sentences like "certified contractor invoices" —
+# where adding safety context would be grammatically wrong and misleading.
+# Keywords here should indicate PHYSICAL ACTIONS, not just nouns that happen
+# to appear in construction contexts.
+SITE_ACTIVITY_KEYWORDS = {
+    "supervision", "supervise", "supervised",
+    "inspection", "inspect", "inspected",
+    "concrete", "structural", "construction",
+    "hse", "safety", "compliance",
+    "site works", "site activities",          # two-word phrases to avoid false matches
+    "installation", "installed", "erection",
+    "piling", "excavation", "formwork",
+    "monitoring works", "structural works",   # specific compound forms from this CV
+}
+
+# Verbs to normalise (tone softening for overqualified candidates)
+# e.g. "led" sounds too senior for a junior/mid role → "coordinated"
+VERB_NORMALISATION = {
     "responsible for supervising": "supervised",
-    "supported with": "prepared",
-    "assisted with": "supported",
-    "led": "coordinated",
-    "spearheaded": "coordinated",
+    "supported with":              "supported",
+    "assisted with":               "supported",
+    "led":                         "coordinated",
+    "spearheaded":                 "coordinated",
+    "commanded":                   "directed",
 }
 
 
-def normalize_verb(text: str) -> str:
+# ── Private helpers ───────────────────────────────────────────────────────────
+
+def _clean_bullet(text: str) -> str:
+    """Remove leading dashes, hyphens, and whitespace."""
+    return text.lstrip("- ").strip()
+
+
+def _normalise_verbs(text: str) -> str:
+    """
+    Replace overly strong verbs with more measured alternatives.
+    Only used when the candidate is classified as overqualified —
+    so the tone matches what the employer expects for the role.
+    """
     text_lower = text.lower()
-    for phrase, replacement in VERB_NORMALIZATION.items():
+    for phrase, replacement in VERB_NORMALISATION.items():
         if phrase in text_lower:
+            # Replace in the lowercased version, then re-capitalise
             return text_lower.replace(phrase, replacement)
     return text_lower
 
 
-def select_safety_phrase(index: int) -> str:
-    """Deterministic rotation of safety phrases"""
+def _is_site_activity(text: str) -> bool:
+    """
+    Return True if the bullet describes a physical site/construction activity.
+
+    This is a HEURISTIC (educated guess based on keywords), not perfect.
+    But it's far better than blindly appending safety context to every bullet.
+
+    Example:
+        "Verified contractor-executed structural works"  → True (site activity)
+        "Reviewed and certified contractor invoices"     → False (admin activity)
+    """
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in SITE_ACTIVITY_KEYWORDS)
+
+
+def _select_safety_phrase(index: int) -> str:
+    """
+    Pick a safety phrase by rotating through the list.
+    Using modulo (%) ensures we cycle: index 0→phrase 0, 1→phrase 1, 2→phrase 0 again.
+
+    WHY ROTATE instead of always using phrase 0?
+    Variety. A CV with three identical safety phrases looks like a template.
+    Rotating them looks more natural.
+    """
     return SAFETY_PHRASES[index % len(SAFETY_PHRASES)]
 
 
-def polish_sentence(text: str) -> str:
+def _polish(text: str) -> str:
+    """Ensure the sentence starts with a capital letter."""
     text = text.strip()
+    if not text:
+        return text
     return text[0].upper() + text[1:]
 
 
-def rewrite_bullets(bullets, profile, job, intelligence):
-    rewritten = []
+# ── Public function ───────────────────────────────────────────────────────────
 
-    for i, bullet in enumerate(bullets):
-        # 1. CLEAN INPUT (remove existing dashes)
-        clean_bullet = bullet.lstrip("- ").strip()
+def rewrite_bullets(
+    bullets: list[str],
+    profile: dict,
+    job,            # ParsedJob object or dict
+    intelligence: dict,
+) -> list[str]:
+    """
+    Rewrite a list of CV bullets to better align with a specific job.
 
-        # 2. NORMALIZE VERBS
-        text = normalize_verb(clean_bullet)
+    Rules applied (in order):
+    1. Clean input (strip leading dashes)
+    2. Normalise verbs (only if overqualified)
+    3. Append safety context (only if it's a site activity AND high-safety job)
+    4. Append project alignment (always, to connect experience to the job)
+    5. Polish capitalisation
 
-        # 3. PROJECT ALIGNMENT
-        project = None
+    Args:
+        bullets:      Raw bullet strings from the CV
+        profile:      Candidate profile dict (for name, title etc.)
+        job:          Job object — can be dict or ParsedJob (we handle both)
+        intelligence: Intelligence dict from build_intelligence()
+
+    Returns:
+        List of rewritten bullet strings, each prefixed with "- "
+    """
+    seniority   = intelligence.get("seniority", "matched")
+    risk_flags  = intelligence.get("risk_flags", [])
+    is_high_risk = "high_safety_environment" in risk_flags
+
+    # Safely extract the first project type regardless of whether job is a dict or object
+    # WHY handle both? The original code used hasattr() checks — fragile.
+    # Better: try attribute access, fall back to dict access.
+    project_label = None
+    try:
         if hasattr(job, "project_types") and job.project_types:
-            project = job.project_types[0].lower()
+            raw_pt = job.project_types[0]
+            # Handle enum values (e.g. ProjectType.INFRASTRUCTURE) or plain strings
+            project_label = raw_pt.value if hasattr(raw_pt, "value") else str(raw_pt).lower()
         elif isinstance(job, dict) and job.get("project_types"):
-            project = job["project_types"][0].lower()
+            project_label = str(job["project_types"][0]).lower()
+    except (IndexError, AttributeError):
+        project_label = None
 
-        # 4. SAFETY (deterministic)
-        safety_phrase = select_safety_phrase(i)
+    rewritten = []
+    for i, bullet in enumerate(bullets):
 
-        # 5. BUILD BULLET
-        if project:
-            rewritten_bullet = f"{text}, {safety_phrase} on {project} projects"
+        # ── Step 1: Clean ──────────────────────────────────────────────────
+        text = _clean_bullet(bullet)
+
+        # ── Step 2: Verb normalisation (overqualified only) ────────────────
+        # We only soften verbs when the candidate is clearly senior for the role.
+        # For a matched or underqualified candidate, keep their strongest verbs.
+        if seniority in ("overqualified", "tolerated_overqualified"):
+            text = _normalise_verbs(text)
         else:
-            rewritten_bullet = f"{text}, {safety_phrase}"
+            text = text.lower()
 
-        # 6. POLISH + SINGLE DASH
-        rewritten.append(f"- {polish_sentence(rewritten_bullet)}")
-        
+        # ── Step 3: Safety context (site activities in high-risk jobs only) ──
+        # FIXED: Was unconditional. Now gated on both conditions.
+        if is_high_risk and _is_site_activity(text):
+            safety = _select_safety_phrase(i)
+            text = f"{text}, {safety}"
+
+        # ── Step 4: Project alignment ──────────────────────────────────────
+        # Only append if the project type isn't already mentioned in the bullet.
+        # Avoids: "...on infrastructure projects on infrastructure projects"
+        if project_label and project_label not in text.lower():
+            text = f"{text} on {project_label} projects"
+
+        # ── Step 5: Polish ─────────────────────────────────────────────────
+        rewritten.append(f"- {_polish(text)}")
 
     return rewritten
