@@ -1,0 +1,31 @@
+APPLICATION: Civil Construction Engineer
+File       : rovanda.txt
+Salary     : ₦600,000
+Apply to   : victor.f@rovedana.com
+Confidence : 90/100  ██████████████████░░
+Verdict    : ✅  APPLY FIRST
+
+────────────────────────────────────────────────────────────
+CV SUMMARY  [COHERE]
+────────────────────────────────────────────────────────────
+
+Civil Engineer with 11 years' experience in building and construction projects. Expertise in monitoring compliance, reinforcement inspection, and drawing review. Proficient in AutoCAD and MS Project for design and planning. Additional skills include HSE enforcement, MS Excel, Power BI, and ProtaStructure. Proven ability to deliver high-quality work on time and within budget.
+
+↑ Paste into the Profile/Summary section of your CV
+
+────────────────────────────────────────────────────────────
+COVER LETTER
+────────────────────────────────────────────────────────────
+
+Dear Hiring Manager,
+
+I am writing to apply for the Civil Construction Engineer position. As a Civil Engineer with 11 years of experience, I am confident my background aligns closely with the requirements of this role.
+
+My background spans Buildings, Construction projects with direct, hands-on experience in the activities this role requires. My technical toolkit includes AutoCAD, MS Project, applied consistently across site-based delivery roles. I am attracted to this role specifically for its hands-on, site-delivery focus — the environment where I do my best work.
+
+I would welcome the opportunity to discuss how my experience can contribute to your team.
+
+Yours sincerely,
+Sikiru Yusuff Olatunji
+
+↑ Paste into your email body. Attach your CV. Send.

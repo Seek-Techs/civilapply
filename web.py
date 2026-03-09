@@ -90,9 +90,25 @@ if not _SECRET:
 app.secret_key = _SECRET
 from flask import session
 
-# In-memory CV store keyed by session id (resets on server restart)
-# For production this would be a database
+# In-memory CV store — keyed by session id, LRU eviction at 200 sessions.
 _SESSION_CVS: dict = {}
+_SESSION_TS:  dict = {}
+_SESSION_MAX       = 200
+
+def _get_session_cv(sid):
+    if not sid: return None
+    cv = _SESSION_CVS.get(sid)
+    if cv: _SESSION_TS[sid] = time.time()
+    return cv
+
+def _set_session_cv(sid, cv):
+    _SESSION_CVS[sid] = cv
+    _SESSION_TS[sid]  = time.time()
+    if len(_SESSION_CVS) > _SESSION_MAX:
+        oldest = sorted(_SESSION_TS, key=_SESSION_TS.get)[:20]
+        for s in oldest:
+            _SESSION_CVS.pop(s, None)
+            _SESSION_TS.pop(s, None)
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
@@ -178,8 +194,8 @@ def run_pipeline(raw_text: str, cv_override: dict | None = None) -> dict:
 
 @app.route('/')
 def index():
-    profile  = BASE_CV.get('profile', {})
-    groq_key = os.environ.get('GROQ_API_KEY', '')
+    profile    = BASE_CV.get('profile', {})
+    groq_key   = os.environ.get('GROQ_API_KEY', '')
     cohere_key = os.environ.get('COHERE_API_KEY', '')
     if cohere_key:
         provider_label = 'Cohere AI — FREE'
@@ -187,10 +203,13 @@ def index():
         provider_label = 'Groq AI — FREE'
     else:
         provider_label = 'Rule-based'
+    # First-visit flag: has this browser session uploaded a CV yet?
+    has_cv = bool(session.get('cv_id') and _get_session_cv(session.get('cv_id')))
     return render_template_string(HTML_TEMPLATE,
         name=profile.get('name', ''),
         years=profile.get('experience_years', ''),
         provider=provider_label,
+        first_visit=('false' if has_cv else 'true'),
     )
 
 @app.route('/test-email')
@@ -264,7 +283,8 @@ def upload_cv():
         if not sid:
             sid = str(uuid.uuid4())
             session['cv_id'] = sid
-        _SESSION_CVS[sid] = parsed_cv
+        _set_session_cv(sid, parsed_cv)
+        _log_event('cv_uploaded', {'skills': len(parsed_cv.get('skills', [])), 'exp': len(parsed_cv.get('experience', []))})
 
         profile = parsed_cv['profile']
         return jsonify({
@@ -296,11 +316,12 @@ def download_cv():
     try:
         # Use uploaded CV if available, otherwise fall back to default
         sid        = session.get('cv_id')
-        active_cv  = _SESSION_CVS.get(sid) if sid else None
+        active_cv  = _get_session_cv(sid) if sid else None
         active_cv  = active_cv or BASE_CV
         candidate  = active_cv.get('profile', {}).get('name', 'Candidate').replace(' ', '_')
         tmp_path   = os.path.join(tempfile.gettempdir(), f"cv_{job_title}.pdf")
         generate_cv_pdf(active_cv, tmp_path, cv_summary=cv_summary)
+        _log_event('cv_downloaded', {'job_title': job_title})
         return send_file(tmp_path, as_attachment=True,
                          download_name=f"{candidate}_CV_{job_title}.pdf",
                          mimetype='application/pdf')
@@ -320,8 +341,9 @@ def process():
         from flask import session
         # Try cookie session first, then JS-supplied session_id as fallback
         sid = session.get('cv_id') or (data or {}).get('session_id')
-        cv_override = _SESSION_CVS.get(sid) if sid else None
+        cv_override = _get_session_cv(sid) if sid else None
         result = run_pipeline(raw_text, cv_override=cv_override)
+        _log_event('cv_generated', {'confidence': result.get('confidence', 0), 'rank': result.get('rank', '')})
         return jsonify(result)
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e), 'trace': traceback.format_exc()})
@@ -589,7 +611,7 @@ def send_application():
     try:
         # Generate CV PDF
         sid       = session.get('cv_id')
-        active_cv = _SESSION_CVS.get(sid) if sid else None
+        active_cv = _get_session_cv(sid) if sid else None
         active_cv = active_cv or BASE_CV
         candidate = active_cv.get('profile', {}).get('name', 'Candidate')
         tmp_path  = os.path.join(tempfile.gettempdir(), f"cv_{job_title}.pdf")
@@ -628,6 +650,199 @@ def send_application():
 
 
 
+
+# ── Batch Apply ────────────────────────────────────────────────────────────────
+
+@app.route('/batch-preview', methods=['POST'])
+def batch_preview():
+    """
+    Scrape jobs, run pipeline on each, return ranked list filtered by:
+    - confidence >= min_confidence (default 60)
+    - job has an apply email OR url (we send to email ones, link to platform ones)
+    """
+    if not _check_rate(request.remote_addr):
+        return jsonify({'status': 'error', 'message': 'Too many requests. Please wait.'})
+
+    data           = request.get_json() or {}
+    min_confidence = int(data.get('min_confidence', 55))
+    email_only     = bool(data.get('email_only', False))
+
+    try:
+        from civil_engineering.scraper.job_scraper import fetch_jobs
+        jobs = fetch_jobs(sources=['jobberman', 'myjobmag'], max_pages=2, force_refresh=False)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Scraping failed: {e}'})
+
+    sid       = session.get('cv_id')
+    active_cv = _get_session_cv(sid) if sid else None
+    active_cv = active_cv or BASE_CV
+
+    results   = []
+    skipped   = 0
+
+    for job in jobs:
+        snippet = ' '.join([
+            job.get('title',''), job.get('company',''), job.get('location',''),
+            job.get('snippet',''), job.get('salary','')
+        ])
+        try:
+            pipeline = run_pipeline(snippet, cv_override=active_cv)
+        except Exception:
+            skipped += 1
+            continue
+
+        if pipeline.get('status') == 'rejected':
+            skipped += 1
+            continue
+
+        confidence = pipeline.get('match', {}).get('confidence', 0)
+        if confidence < min_confidence:
+            skipped += 1
+            continue
+
+        apply_email = pipeline.get('job', {}).get('email') or job.get('email') or ''
+
+        if email_only and not apply_email:
+            skipped += 1
+            continue
+
+        results.append({
+            'title':       pipeline['job'].get('title') or job.get('title', 'Unknown'),
+            'company':     pipeline['job'].get('company') or job.get('company', ''),
+            'location':    pipeline['job'].get('location') or job.get('location', ''),
+            'salary':      pipeline['job'].get('salary') or job.get('salary', ''),
+            'url':         job.get('url', ''),
+            'apply_email': apply_email,
+            'confidence':  confidence,
+            'rank':        pipeline['match'].get('rank', ''),
+            'cv_summary':  pipeline.get('cv_summary', ''),
+            'cover_letter': pipeline.get('cover_letter', ''),
+            'can_email':   bool(apply_email),
+        })
+
+    results.sort(key=lambda x: x['confidence'], reverse=True)
+
+    return jsonify({
+        'status':   'ok',
+        'results':  results,
+        'total':    len(results),
+        'skipped':  skipped,
+    })
+
+
+@app.route('/batch-send', methods=['POST'])
+def batch_send():
+    """Send tailored CVs to a list of jobs (email-apply only)."""
+    import smtplib, tempfile, time as _time
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text      import MIMEText
+    from email.mime.base      import MIMEBase
+    from email                import encoders
+
+    data = request.get_json() or {}
+    jobs = data.get('jobs', [])   # list of {title, company, apply_email, cv_summary, cover_letter, url}
+
+    if not jobs:
+        return jsonify({'status': 'error', 'message': 'No jobs provided'})
+
+    sender_email = os.environ.get('SMTP_EMAIL', '').strip()
+    sender_pass  = os.environ.get('SMTP_PASSWORD', '').strip()
+    smtp_host    = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    smtp_port    = int(os.environ.get('SMTP_PORT', '587'))
+
+    if not sender_email or not sender_pass:
+        return jsonify({
+            'status': 'error',
+            'message': 'Email not configured. Add SMTP_EMAIL and SMTP_PASSWORD.',
+            'setup_needed': True
+        })
+
+    sid       = session.get('cv_id')
+    active_cv = _get_session_cv(sid) if sid else None
+    active_cv = active_cv or BASE_CV
+    candidate = active_cv.get('profile', {}).get('name', 'Candidate')
+
+    sent    = []
+    failed  = []
+
+    try:
+        smtp = smtplib.SMTP(smtp_host, smtp_port)
+        smtp.starttls()
+        smtp.login(sender_email, sender_pass)
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({'status': 'error', 'message': 'Email login failed. Check SMTP_EMAIL and SMTP_PASSWORD.'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Could not connect to email server: {e}'})
+
+    for job in jobs:
+        to_email   = (job.get('apply_email') or '').strip()
+        title      = job.get('title', 'the advertised role')
+        cv_summary = job.get('cv_summary', '')
+        body       = job.get('cover_letter', '')
+        job_slug   = title.replace(' ', '_').replace('/', '_')[:40]
+
+        if not to_email:
+            failed.append({'title': title, 'reason': 'No email address'})
+            continue
+
+        try:
+            # Generate tailored CV PDF
+            tmp_path = os.path.join(tempfile.gettempdir(), f'cv_batch_{job_slug}.pdf')
+            generate_cv_pdf(active_cv, tmp_path, cv_summary=cv_summary)
+
+            msg = MIMEMultipart()
+            msg['From']    = f"{candidate} <{sender_email}>"
+            msg['To']      = to_email
+            msg['Subject'] = f"Application for {title}"
+            msg.attach(MIMEText(body or f"Dear Hiring Manager,\n\nPlease find my CV attached.\n\nYours sincerely,\n{candidate}", 'plain'))
+
+            with open(tmp_path, 'rb') as f:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition',
+                            f'attachment; filename="{candidate.replace(" ","_")}_CV_{job_slug}.pdf"')
+            msg.attach(part)
+
+            smtp.send_message(msg)
+            sent.append({'title': title, 'to': to_email})
+            app.logger.info(f"batch-send: sent to {to_email} for {title}")
+
+            # Small delay to avoid spam filters
+            _time.sleep(2)
+
+        except Exception as e:
+            failed.append({'title': title, 'reason': str(e)})
+            app.logger.error(f"batch-send error for {title}: {e}")
+
+    smtp.quit()
+
+    # Log all sent jobs to tracker
+    for s in sent:
+        try:
+            conn = _tracker_db()
+            conn.execute(
+                '''INSERT INTO applications (title, company, location, salary, url, platform, method, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (s['title'],
+                 next((j.get('company','') for j in jobs if j.get('title') == s['title']), ''),
+                 next((j.get('location','') for j in jobs if j.get('title') == s['title']), ''),
+                 next((j.get('salary','') for j in jobs if j.get('title') == s['title']), ''),
+                 next((j.get('url','') for j in jobs if j.get('title') == s['title']), ''),
+                 'Batch Apply', 'Email', 'Applied')
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    return jsonify({
+        'status': 'ok',
+        'sent':   sent,
+        'failed': failed,
+        'total_sent': len(sent),
+    })
+
 # ── Application Tracker ────────────────────────────────────────────────────────
 
 def _tracker_db():
@@ -638,6 +853,7 @@ def _tracker_db():
     conn.row_factory = sqlite3.Row
     conn.execute('''CREATE TABLE IF NOT EXISTS applications (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id   TEXT DEFAULT '',
         title     TEXT NOT NULL,
         company   TEXT,
         location  TEXT,
@@ -648,6 +864,39 @@ def _tracker_db():
         status    TEXT DEFAULT 'Applied',
         notes     TEXT DEFAULT '',
         applied_at TEXT DEFAULT (datetime('now', 'localtime'))
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS users (
+        id            TEXT PRIMARY KEY,
+        email         TEXT UNIQUE NOT NULL,
+        name          TEXT DEFAULT '',
+        password_hash TEXT DEFAULT '',
+        created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+        last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
+    )''')
+    # Migrate: add password_hash if upgrading old DB
+    try:
+        conn.execute('ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ""')
+        conn.commit()
+    except Exception:
+        pass
+    conn.execute('''CREATE TABLE IF NOT EXISTS events (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id    TEXT DEFAULT '',
+        session_id TEXT DEFAULT '',
+        event      TEXT NOT NULL,
+        meta       TEXT DEFAULT '{}',
+        ip         TEXT DEFAULT '',
+        ua         TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS feedback (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id    TEXT DEFAULT '',
+        session_id TEXT DEFAULT '',
+        rating     INTEGER NOT NULL,
+        message    TEXT DEFAULT '',
+        context    TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now', 'localtime'))
     )''')
     conn.commit()
     return conn
@@ -662,9 +911,10 @@ def tracker_add():
         return jsonify({'status': 'error', 'message': 'Job title required'})
     try:
         conn = _tracker_db()
+        uid = session.get('cv_id', 'anonymous')
         conn.execute(
-            '''INSERT INTO applications (title, company, location, salary, url, platform, method, status, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            '''INSERT INTO applications (title, company, location, salary, url, platform, method, status, notes, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (title,
              data.get('company', ''),
              data.get('location', ''),
@@ -673,7 +923,8 @@ def tracker_add():
              data.get('platform', ''),
              data.get('method', ''),
              data.get('status', 'Applied'),
-             data.get('notes', ''))
+             data.get('notes', ''),
+             uid)
         )
         conn.commit()
         conn.close()
@@ -687,7 +938,12 @@ def tracker_list():
     """Return all tracked applications as JSON."""
     try:
         conn = _tracker_db()
-        rows = conn.execute('SELECT * FROM applications ORDER BY applied_at DESC').fetchall()
+        uid  = session.get('user_id')
+        if uid:
+            rows = conn.execute('SELECT * FROM applications WHERE user_id=? ORDER BY applied_at DESC', (uid,)).fetchall()
+        else:
+            sid  = session.get('cv_id', '')
+            rows = conn.execute('SELECT * FROM applications WHERE user_id=? OR user_id=\'\' ORDER BY applied_at DESC', (sid,)).fetchall()
         conn.close()
         return jsonify([dict(r) for r in rows])
     except Exception as e:
@@ -724,10 +980,318 @@ def tracker_delete():
         return jsonify({'status': 'error', 'message': 'ID required'})
     try:
         conn = _tracker_db()
-        conn.execute('DELETE FROM applications WHERE id = ?', (app_id,))
+        uid = session.get('cv_id', session.get('user_id', ''))
+        conn.execute('DELETE FROM applications WHERE id = ? AND (user_id=? OR user_id=\'\' OR user_id=\'anonymous\')',
+                     (app_id, uid))
         conn.commit()
         conn.close()
         return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/cv-data', methods=['GET'])
+def cv_data():
+    """Return the active CV as JSON for the editor."""
+    sid       = session.get('cv_id')
+    active_cv = _get_session_cv(sid) if sid else None
+    active_cv = active_cv or BASE_CV
+    return jsonify({
+        'status': 'ok',
+        'profile':    active_cv.get('profile', {}),
+        'experience': active_cv.get('experience', []),
+        'education':  active_cv.get('education', []),
+        'skills':     active_cv.get('skills', []),
+    })
+
+
+@app.route('/cv-save', methods=['POST'])
+def cv_save():
+    """Save edited CV sections back to the session."""
+    data = request.get_json() or {}
+    sid  = session.get('cv_id')
+    if not sid:
+        import uuid
+        sid = str(uuid.uuid4())
+        session['cv_id'] = sid
+
+    active_cv = _get_session_cv(sid) if sid else None
+    active_cv = copy.deepcopy(active_cv or BASE_CV)
+
+    # Update whichever sections were sent
+    if 'profile' in data:
+        active_cv['profile'].update(data['profile'])
+    if 'experience' in data:
+        active_cv['experience'] = data['experience']
+    if 'education' in data:
+        active_cv['education'] = data['education']
+    if 'skills' in data:
+        active_cv['skills'] = data['skills']
+
+    _set_session_cv(sid, active_cv)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/session-check')
+def session_check():
+    """Tell the frontend whether this visitor has uploaded a CV."""
+    sid      = session.get('cv_id')
+    has_cv   = bool(sid and _get_session_cv(sid))
+    profile  = {}
+    if has_cv:
+        cv      = _get_session_cv(sid)
+        profile = cv.get('profile', {})
+    return jsonify({
+        'has_cv':  has_cv,
+        'name':    profile.get('name', ''),
+        'years':   profile.get('experience_years', 0),
+    })
+
+
+@app.route('/account/identify', methods=['POST'])
+def account_identify():
+    """Associate current session with an email (soft login — no password)."""
+    import sqlite3, uuid, re as _re
+    data  = request.get_json() or {}
+    email = data.get('email', '').strip().lower()
+    if not email or not _re.match(r'[^@]+@[^@]+\.[^@]+', email):
+        return jsonify({'status': 'error', 'message': 'Valid email required'})
+    name = data.get('name', '').strip()
+    try:
+        conn = _tracker_db()
+        # Upsert user
+        uid = str(uuid.uuid5(uuid.NAMESPACE_URL, email))
+        conn.execute('''INSERT INTO users (id, email, name) VALUES (?, ?, ?)
+                        ON CONFLICT(email) DO UPDATE SET last_seen=datetime('now','localtime'),
+                        name=CASE WHEN excluded.name != '' THEN excluded.name ELSE name END''',
+                     (uid, email, name))
+        conn.commit()
+        # Store in Flask session
+        session['user_id']    = uid
+        session['user_email'] = email
+        # Migrate any anonymous applications to this user
+        sid = session.get('cv_id', '')
+        conn.execute('UPDATE applications SET user_id=? WHERE user_id=? OR user_id=?',
+                     (uid, uid, sid))
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'ok', 'user_id': uid, 'email': email})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/account/me', methods=['GET'])
+def account_me():
+    """Return current user info."""
+    uid   = session.get('user_id')
+    email = session.get('user_email', '')
+    sid   = session.get('cv_id')
+    has_cv = bool(sid and _get_session_cv(sid))
+    return jsonify({
+        'logged_in': bool(uid),
+        'email':     email,
+        'user_id':   uid or '',
+        'has_cv':    has_cv,
+    })
+
+
+# ── Analytics ──────────────────────────────────────────────────────────────────
+
+def _log_event(event: str, meta: dict = None, uid: str = None):
+    """Fire-and-forget event log. Never raises."""
+    try:
+        from flask import has_request_context, request as _req
+        conn = _tracker_db()
+        sid  = session.get('cv_id', '') if has_request_context() else ''
+        uid  = uid or (session.get('user_id', '') if has_request_context() else '')
+        ip   = _req.remote_addr if has_request_context() else ''
+        ua   = _req.headers.get('User-Agent', '')[:200] if has_request_context() else ''
+        conn.execute(
+            "INSERT INTO events (user_id, session_id, event, meta, ip, ua) VALUES (?,?,?,?,?,?)",
+            (uid, sid, event, json.dumps(meta or {}), ip, ua)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+@app.route('/track', methods=['POST'])
+def track():
+    """Client-side event tracking."""
+    data  = request.get_json() or {}
+    event = data.get('event', '').strip()[:80]
+    meta  = data.get('meta', {})
+    if not event:
+        return jsonify({'status': 'error'})
+    _log_event(event, meta)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/feedback', methods=['POST'])
+def submit_feedback():
+    """Store a thumbs-up/down + optional message after CV download."""
+    data    = request.get_json() or {}
+    rating  = data.get('rating')   # 1 = thumbs up, 0 = thumbs down
+    message = data.get('message', '').strip()[:500]
+    context = data.get('context', '').strip()[:200]
+    if rating not in (0, 1):
+        return jsonify({'status': 'error', 'message': 'rating must be 0 or 1'})
+    try:
+        conn = _tracker_db()
+        uid  = session.get('user_id', '')
+        sid  = session.get('cv_id', '')
+        conn.execute(
+            "INSERT INTO feedback (user_id, session_id, rating, message, context) VALUES (?,?,?,?,?)",
+            (uid, sid, rating, message, context)
+        )
+        conn.commit()
+        conn.close()
+        _log_event('feedback_submitted', {'rating': rating})
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+
+@app.route('/auth/register', methods=['POST'])
+def auth_register():
+    """Register with email + password."""
+    import hashlib, re as _re, uuid
+    data     = request.get_json() or {}
+    email    = data.get('email', '').strip().lower()
+    password = data.get('password', '').strip()
+    name     = data.get('name', '').strip()
+
+    if not email or not _re.match(r'[^@]+@[^@]+\.[^@]+', email):
+        return jsonify({'status': 'error', 'message': 'Valid email required'})
+    if len(password) < 8:
+        return jsonify({'status': 'error', 'message': 'Password must be at least 8 characters'})
+
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    uid     = str(uuid.uuid5(uuid.NAMESPACE_URL, email))
+
+    try:
+        conn = _tracker_db()
+        existing = conn.execute('SELECT id, password_hash FROM users WHERE email=?', (email,)).fetchone()
+        if existing:
+            if existing['password_hash']:
+                conn.close()
+                return jsonify({'status': 'error', 'message': 'Email already registered. Please log in.'})
+            # Upgrade soft-login account to full account
+            conn.execute('UPDATE users SET password_hash=?, name=CASE WHEN ? != "" THEN ? ELSE name END WHERE email=?',
+                         (pw_hash, name, name, email))
+        else:
+            conn.execute('INSERT INTO users (id, email, name, password_hash) VALUES (?,?,?,?)',
+                         (uid, email, name, pw_hash))
+        conn.commit()
+        # Migrate session applications
+        sid = session.get('cv_id', '')
+        conn.execute('UPDATE applications SET user_id=? WHERE user_id=? OR user_id=?', (uid, uid, sid))
+        conn.commit()
+        conn.close()
+        session['user_id']    = uid
+        session['user_email'] = email
+        session['user_name']  = name
+        _log_event('register', {'email': email})
+        return jsonify({'status': 'ok', 'user_id': uid, 'email': email, 'name': name})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/auth/login', methods=['POST'])
+def auth_login():
+    """Login with email + password."""
+    import hashlib
+    data     = request.get_json() or {}
+    email    = data.get('email', '').strip().lower()
+    password = data.get('password', '').strip()
+
+    if not email or not password:
+        return jsonify({'status': 'error', 'message': 'Email and password required'})
+
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    try:
+        conn = _tracker_db()
+        user = conn.execute('SELECT * FROM users WHERE email=?', (email,)).fetchone()
+        conn.close()
+        if not user:
+            return jsonify({'status': 'error', 'message': 'No account found for that email'})
+        if not user['password_hash']:
+            return jsonify({'status': 'error', 'message': 'Account has no password set. Use "forgot password" or register again.'})
+        if user['password_hash'] != pw_hash:
+            return jsonify({'status': 'error', 'message': 'Incorrect password'})
+        session['user_id']    = user['id']
+        session['user_email'] = user['email']
+        session['user_name']  = user['name']
+        _log_event('login', {'email': email}, uid=user['id'])
+        return jsonify({'status': 'ok', 'user_id': user['id'],
+                        'email': user['email'], 'name': user['name']})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/auth/logout', methods=['POST'])
+def auth_logout():
+    _log_event('logout')
+    session.pop('user_id', None)
+    session.pop('user_email', None)
+    session.pop('user_name', None)
+    return jsonify({'status': 'ok'})
+
+
+# ── Admin Dashboard ────────────────────────────────────────────────────────────
+
+@app.route('/admin/stats', methods=['GET'])
+def admin_stats():
+    """Usage analytics — protected by ADMIN_KEY env var."""
+    key = request.args.get('key', '')
+    admin_key = os.environ.get('ADMIN_KEY', '')
+    if not admin_key or key != admin_key:
+        return jsonify({'status': 'error', 'message': 'Unauthorized'}), 403
+    try:
+        conn  = _tracker_db()
+        stats = {}
+
+        # Total counts
+        stats['total_users']        = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        stats['total_applications'] = conn.execute('SELECT COUNT(*) FROM applications').fetchone()[0]
+        stats['total_feedback']     = conn.execute('SELECT COUNT(*) FROM feedback').fetchone()[0]
+        stats['thumbs_up']          = conn.execute('SELECT COUNT(*) FROM feedback WHERE rating=1').fetchone()[0]
+        stats['thumbs_down']        = conn.execute('SELECT COUNT(*) FROM feedback WHERE rating=0').fetchone()[0]
+
+        # Events last 7 days
+        events = conn.execute(
+            '''SELECT event, COUNT(*) as cnt FROM events
+               WHERE created_at >= datetime(\'now\',\'-7 days\')
+               GROUP BY event ORDER BY cnt DESC'''
+        ).fetchall()
+        stats['events_7d'] = [dict(r) for r in events]
+
+        # Daily active sessions (unique session_ids) last 14 days
+        daily = conn.execute(
+            '''SELECT DATE(created_at) as day, COUNT(DISTINCT session_id) as sessions,
+                      COUNT(DISTINCT user_id) as users
+               FROM events WHERE created_at >= datetime(\'now\',\'-14 days\')
+               GROUP BY day ORDER BY day DESC'''
+        ).fetchall()
+        stats['daily_activity'] = [dict(r) for r in daily]
+
+        # Recent feedback
+        fb = conn.execute(
+            'SELECT rating, message, context, created_at FROM feedback ORDER BY created_at DESC LIMIT 20'
+        ).fetchall()
+        stats['recent_feedback'] = [dict(r) for r in fb]
+
+        # Recent registrations
+        users = conn.execute(
+            'SELECT email, name, created_at, last_seen FROM users ORDER BY created_at DESC LIMIT 20'
+        ).fetchall()
+        stats['recent_users'] = [dict(r) for r in users]
+
+        conn.close()
+        return jsonify({'status': 'ok', **stats})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
@@ -738,6 +1302,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>var FIRST_VISIT = {{ first_visit }};</script>
 <title>CivilApply v5 — {{ name }}</title>
 <!-- CivilApply v5-phase5 -->
 <style>
@@ -914,6 +1479,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     display: none;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse-border {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(200, 240, 96, 0.4); }
+    50%       { box-shadow: 0 0 0 4px rgba(200, 240, 96, 0); }
+  }
 
   /* ── Output Panel ── */
   .output-panel {
@@ -1231,6 +1800,73 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  /* ── Pulse animation ── */
+  @keyframes pulse-text {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.45; }
+  }
+
+  /* ── Mobile ── */
+  @media (max-width: 768px) {
+    header { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
+    .meta { gap: 8px; flex-wrap: wrap; font-size: 10px; }
+    .meta-item { display: none; }
+    /* Stack panels vertically on mobile */
+    .workspace {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 1fr;
+      height: auto;
+      min-height: calc(100vh - 56px);
+      overflow: visible;
+    }
+    .input-panel {
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      padding: 16px;
+      overflow-y: visible;
+      height: auto;
+    }
+    .output-panel { padding: 16px 16px 32px; overflow-y: visible; }
+    textarea { min-height: 120px; max-height: 220px; }
+    /* Panels full-width on mobile */
+    #tracker-panel, #batch-panel, #cv-editor-panel { width: 100vw !important; }
+    /* Jobs grid single column */
+    #jobs-grid { grid-template-columns: 1fr !important; padding: 10px 12px 20px !important; }
+    .batch-card { flex-wrap: wrap; gap: 8px; }
+    /* Buttons full-width */
+    .btn-generate { padding: 14px; font-size: 13px; }
+    .download-btn { padding: 12px; font-size: 11px; }
+    /* Apply bar inputs */
+    #apply-subject, #apply-body { font-size: 13px; }
+    /* CV editor grid single column on mobile */
+    #cv-tab-profile .cv-field-group[style*="grid-column"] { grid-column: 1 !important; }
+    /* Tracker filter wrap */
+    .tracker-filter-btn { padding: 4px 8px; font-size: 9px; }
+    /* Welcome overlay */
+    #welcome-overlay > div { padding: 28px 20px; }
+    /* Section padding */
+    .section-body { padding: 14px 16px; }
+    .section-head { padding: 10px 16px; }
+    /* Parsed grid */
+    .parsed-grid { grid-template-columns: 1fr 1fr; }
+    /* Hide non-essential header items */
+    #tracker-nav-btn .tracker-count-badge { display: inline !important; }
+  }
+  @media (max-width: 480px) {
+    .logo { font-size: 17px; }
+    .parsed-grid { grid-template-columns: 1fr; }
+    header { padding: 10px 12px; }
+    .input-panel, .output-panel { padding: 12px; }
+    .section-body { padding: 12px; }
+    .section-head { padding: 10px 12px; font-size: 11px; }
+    /* Stack download + edit buttons */
+    #download-cv-btn, #edit-cv-btn { width: 100%; }
+    /* Cover letter textarea readable */
+    #apply-body { min-height: 160px; }
+    /* Batch score label */
+    #batch-score-label { font-size: 13px; }
+  }
+
 </style>
 </head>
 <body>
@@ -1243,8 +1879,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span>📄</span>
       <span id="header-upload-text">Upload CV</span>
     </label>
-    <div class="meta-item">Candidate: <strong id="candidate-name">{{ name }}</strong></div>
-    <div class="meta-item">Experience: <strong id="candidate-years">{{ years }}</strong> yrs</div>
+    <div class="meta-item" id="candidate-meta" style="display:none">Candidate: <strong id="candidate-name">{{ name }}</strong></div>
+    <div class="meta-item" id="years-meta" style="display:none">Experience: <strong id="candidate-years">{{ years }}</strong> yrs</div>
+    <div id="new-user-prompt"
+      style="font-size:10px;color:var(--accent);letter-spacing:0.5px;
+             background:#0f1a0a;border:1px solid var(--accent);border-radius:3px;
+             padding:4px 10px;animation:pulse-border 2s ease-in-out infinite;cursor:pointer"
+      onclick="document.getElementById('cv-file-input-hdr').click()"
+      title="Click to upload your CV">
+      ⬆ Upload your CV first
+    </div>
     <div class="provider-badge">{{ provider }}</div>
     <button onclick="showTracker()" id="tracker-nav-btn"
       style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 14px;
@@ -1254,6 +1898,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
       📋 My Applications <span id="tracker-count-badge" style="display:none;background:var(--accent);color:#0e0f0c;border-radius:10px;padding:1px 6px;font-size:9px;margin-left:4px"></span>
     </button>
+    <!-- Auth button -->
+    <div id="auth-nav" style="display:flex;align-items:center;gap:8px">
+      <span id="auth-user-display" style="display:none;font-size:10px;color:var(--muted);letter-spacing:0.5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+      <button id="auth-nav-btn" onclick="showAuth()"
+        style="background:transparent;border:1px solid var(--border);color:var(--muted);
+               padding:5px 12px;font-family:var(--mono);font-size:10px;cursor:pointer;
+               border-radius:2px;letter-spacing:0.5px;transition:all 0.15s;white-space:nowrap"
+        onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
+        👤 Sign In
+      </button>
+    </div>
   </div>
 </header>
 
@@ -1388,9 +2044,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div style="margin-top:12px;font-size:10px;color:var(--muted);letter-spacing:0.5px">
             ↑ Paste into the Profile/Summary section of your CV
           </div>
-          <button class="download-btn" id="download-cv-btn" onclick="downloadCV()" disabled>
-            ⬇ Download Tailored CV PDF
-          </button>
+          <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+            <button class="download-btn" id="download-cv-btn" onclick="downloadCV()" disabled style="flex:1">
+              ⬇ Download CV PDF
+            </button>
+            <button class="copy-btn" id="edit-cv-btn" onclick="showCvEditor()" disabled
+              style="padding:10px 18px;font-size:11px;border-color:var(--accent);color:var(--accent)">
+              ✏ Edit CV
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1492,15 +2154,98 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="jobs-grid" style="padding:10px 40px 28px; display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; max-height:500px; overflow-y:auto;"></div>
 </div>
 
-<div style="border-top:1px solid var(--border);padding:8px 40px;background:var(--surface);display:flex;align-items:center;gap:16px;">
+<div style="border-top:1px solid var(--border);padding:8px 40px;background:var(--surface);display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
   <button onclick="toggleJobsFeed()" id="feed-toggle-btn"
     style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 14px;font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-radius:2px;transition:all 0.15s;"
     onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
     onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
-    ⚡ Show Live Jobs
+    ⚡ Live Jobs
   </button>
-  <span style="font-size:10px;color:var(--muted);">Auto-pulls civil engineering jobs from Jobberman &amp; MyJobMag</span>
+  <button onclick="showBatchApply()"
+    style="background:var(--accent);color:#0e0f0c;border:none;padding:5px 16px;font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-radius:2px;font-weight:600;transition:all 0.15s;"
+    onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+    🚀 Batch Apply
+  </button>
+  <span style="font-size:10px;color:var(--muted);">Auto-send tailored CV to all matching jobs in one click</span>
 </div>
+
+<!-- ── Batch Apply Panel ──────────────────────────────────────────────── -->
+<div id="batch-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;backdrop-filter:blur(3px)" onclick="hideBatchApply()"></div>
+
+<div id="batch-panel" style="display:none;position:fixed;top:0;right:0;width:min(780px,100vw);height:100vh;
+     background:var(--bg);border-left:1px solid var(--border);z-index:201;
+     flex-direction:column;transform:translateX(100%);transition:transform 0.25s ease">
+
+  <!-- Header -->
+  <div style="padding:20px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface)">
+    <div>
+      <div style="font-size:16px;font-weight:600;color:var(--accent)">🚀 Batch Apply</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">Scan all jobs, pick the best matches, send your CV in one go</div>
+    </div>
+    <button onclick="hideBatchApply()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:2px">✕ Close</button>
+  </div>
+
+  <!-- Controls -->
+  <div style="padding:14px 28px;border-bottom:1px solid var(--border);display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <div>
+      <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px;letter-spacing:1px;text-transform:uppercase">Min Match Score</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="range" id="batch-min-score" min="40" max="85" value="55" step="5"
+          oninput="document.getElementById('batch-score-label').textContent=this.value+'%'"
+          style="width:120px;accent-color:var(--accent)">
+        <span id="batch-score-label" style="font-size:13px;color:var(--accent);font-weight:600;min-width:36px">55%</span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="batch-email-only" style="accent-color:var(--accent)">
+      <label for="batch-email-only" style="font-size:11px;color:var(--muted);cursor:pointer">Email-apply jobs only</label>
+    </div>
+    <button onclick="runBatchPreview()" id="batch-scan-btn"
+      style="background:var(--accent);color:#0e0f0c;border:none;padding:8px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;border-radius:2px;text-transform:uppercase">
+      🔍 Scan Jobs
+    </button>
+  </div>
+
+  <!-- Results -->
+  <div id="batch-results" style="flex:1;overflow-y:auto;padding:16px 28px">
+    <div id="batch-idle" style="text-align:center;padding:60px 20px;color:var(--muted)">
+      <div style="font-size:36px;margin-bottom:12px">🎯</div>
+      <div style="font-size:13px">Click "Scan Jobs" to find your best matches</div>
+      <div style="font-size:11px;margin-top:6px">We'll scrape Jobberman + MyJobMag, score each job against your CV, and show only the ones worth applying to</div>
+    </div>
+    <div id="batch-loading" style="display:none;text-align:center;padding:40px;color:var(--muted)">
+      <div style="font-size:24px;margin-bottom:8px;animation:spin 1s linear infinite;display:inline-block">⟳</div>
+      <div style="font-size:12px;margin-top:8px" id="batch-loading-msg">Scanning jobs...</div>
+    </div>
+    <div id="batch-list" style="display:none">
+      <div id="batch-summary-bar" style="margin-bottom:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:3px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span id="batch-summary-text" style="font-size:11px;color:var(--text)"></span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label style="font-size:10px;color:var(--muted)">
+            <input type="checkbox" id="batch-select-all" onchange="batchSelectAll(this.checked)" style="accent-color:var(--accent)"> Select all email-apply
+          </label>
+          <button onclick="sendBatchSelected()" id="batch-send-btn"
+            style="background:var(--accent);color:#0e0f0c;border:none;padding:7px 18px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;border-radius:2px;letter-spacing:0.5px">
+            📤 Send Selected
+          </button>
+        </div>
+      </div>
+      <div id="batch-cards"></div>
+    </div>
+  </div>
+</div>
+
+<style>
+.batch-card {
+  border:1px solid var(--border);border-radius:3px;padding:12px 14px;
+  margin-bottom:8px;background:var(--surface);display:flex;align-items:center;gap:12px;
+  transition:border-color 0.15s;
+}
+.batch-card:hover { border-color:#444; }
+.batch-card.selected { border-color:var(--accent);background:#0d1a08; }
+.conf-bar-bg { background:#1a1a1a;border-radius:2px;height:4px;width:80px;flex-shrink:0; }
+.conf-bar-fill { height:4px;border-radius:2px;background:var(--accent);transition:width 0.3s; }
+</style>
 
 <!-- ── Application Tracker Panel ────────────────────────────────────── -->
 <div id="tracker-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;backdrop-filter:blur(2px)" onclick="hideTracker()"></div>
@@ -1581,6 +2326,298 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 .status-Rejected  { background:#2a0a0a;color:#f06060;border:1px solid #5a1a1a; }
 .status-Withdrawn { background:#1a1a1a;color:#888;border:1px solid #333; }
 </style>
+
+<!-- ── Auth Modal ─────────────────────────────────────────────────────── -->
+<div id="auth-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.82);
+     z-index:500;backdrop-filter:blur(4px);align-items:center;justify-content:center"
+     onclick="if(event.target===this)hideAuth()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;
+              padding:36px 40px;max-width:400px;width:90vw">
+
+    <!-- Tabs -->
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:24px">
+      <button class="auth-tab active" id="auth-tab-login" onclick="switchAuthTab('login')">Sign In</button>
+      <button class="auth-tab" id="auth-tab-register" onclick="switchAuthTab('register')">Create Account</button>
+    </div>
+
+    <!-- Login form -->
+    <div id="auth-login-form">
+      <div class="cv-field-group" style="margin-bottom:14px">
+        <label class="cv-label">Email</label>
+        <input class="cv-input" id="auth-login-email" type="email" placeholder="your@email.com" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <div class="cv-field-group" style="margin-bottom:20px">
+        <label class="cv-label">Password</label>
+        <input class="cv-input" id="auth-login-password" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <div id="auth-login-error" style="font-size:11px;color:#f06060;margin-bottom:12px;display:none"></div>
+      <button onclick="doLogin()" id="auth-login-btn"
+        style="width:100%;background:var(--accent);color:#0e0f0c;border:none;padding:12px;
+               font-family:var(--mono);font-size:12px;font-weight:600;cursor:pointer;border-radius:2px">
+        Sign In
+      </button>
+    </div>
+
+    <!-- Register form -->
+    <div id="auth-register-form" style="display:none">
+      <div class="cv-field-group" style="margin-bottom:14px">
+        <label class="cv-label">Your Name</label>
+        <input class="cv-input" id="auth-reg-name" type="text" placeholder="First Last">
+      </div>
+      <div class="cv-field-group" style="margin-bottom:14px">
+        <label class="cv-label">Email</label>
+        <input class="cv-input" id="auth-reg-email" type="email" placeholder="your@email.com">
+      </div>
+      <div class="cv-field-group" style="margin-bottom:20px">
+        <label class="cv-label">Password (min 8 characters)</label>
+        <input class="cv-input" id="auth-reg-password" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doRegister()">
+      </div>
+      <div id="auth-reg-error" style="font-size:11px;color:#f06060;margin-bottom:12px;display:none"></div>
+      <button onclick="doRegister()" id="auth-reg-btn"
+        style="width:100%;background:var(--accent);color:#0e0f0c;border:none;padding:12px;
+               font-family:var(--mono);font-size:12px;font-weight:600;cursor:pointer;border-radius:2px">
+        Create Account
+      </button>
+    </div>
+
+    <div style="text-align:center;margin-top:14px;font-size:10px;color:var(--muted)">
+      Your CV stays private. No spam. <button onclick="hideAuth()" style="background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:10px;cursor:pointer;text-decoration:underline">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Feedback Prompt ─────────────────────────────────────────────────── -->
+<div id="feedback-bar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:200;
+     background:var(--surface);border-top:1px solid var(--border);padding:14px 24px;
+     display:none;align-items:center;gap:16px;flex-wrap:wrap">
+  <span style="font-size:12px;color:var(--text);flex:1;min-width:180px">
+    Was this CV tailoring useful?
+  </span>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button onclick="sendFeedback(1,this)" title="Yes, helpful"
+      style="background:transparent;border:1px solid var(--border);color:var(--text);
+             padding:6px 16px;font-size:16px;cursor:pointer;border-radius:2px;transition:all 0.15s"
+      onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">👍</button>
+    <button onclick="sendFeedback(0,this)" title="Not helpful"
+      style="background:transparent;border:1px solid var(--border);color:var(--text);
+             padding:6px 16px;font-size:16px;cursor:pointer;border-radius:2px;transition:all 0.15s"
+      onmouseover="this.style.borderColor='#f06060'" onmouseout="this.style.borderColor='var(--border)'">👎</button>
+    <input id="feedback-msg" placeholder="Optional comment..." maxlength="300"
+      style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+             padding:6px 12px;font-family:var(--mono);font-size:11px;border-radius:2px;
+             outline:none;width:220px"
+      onkeydown="if(event.key==='Enter'&&this.value)sendFeedback(-1,null)">
+    <button onclick="hideFeedbackBar()"
+      style="background:transparent;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:4px">✕</button>
+  </div>
+</div>
+
+<style>
+.auth-tab {
+  background:transparent;border:none;border-bottom:2px solid transparent;
+  color:var(--muted);padding:10px 18px;font-family:var(--mono);font-size:11px;
+  letter-spacing:0.5px;cursor:pointer;transition:all 0.15s;text-transform:uppercase;
+}
+.auth-tab:hover  { color:var(--text); }
+.auth-tab.active { color:var(--accent);border-bottom-color:var(--accent); }
+</style>
+
+<!-- ── CV Editor Panel ───────────────────────────────────────────────── -->
+<div id="cv-editor-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;backdrop-filter:blur(3px)" onclick="hideCvEditor()"></div>
+
+<div id="cv-editor-panel" style="display:none;position:fixed;top:0;right:0;width:min(820px,100vw);height:100vh;
+     background:var(--bg);border-left:1px solid var(--border);z-index:301;
+     flex-direction:column;transform:translateX(100%);transition:transform 0.25s ease">
+
+  <!-- Header -->
+  <div style="padding:18px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);flex-shrink:0">
+    <div>
+      <div style="font-size:16px;font-weight:600;color:var(--accent)">✏ Edit Your CV</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">Changes apply to this session — download to save permanently</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="saveCvEditor()" id="cv-save-btn"
+        style="background:var(--accent);color:#0e0f0c;border:none;padding:8px 20px;
+               font-family:var(--mono);font-size:11px;font-weight:600;cursor:pointer;border-radius:2px">
+        💾 Save Changes
+      </button>
+      <button onclick="hideCvEditor()"
+        style="background:transparent;border:1px solid var(--border);color:var(--muted);
+               padding:8px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:2px">✕</button>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div style="display:flex;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0">
+    <button class="cv-tab active" onclick="switchCvTab('profile',this)">👤 Profile</button>
+    <button class="cv-tab" onclick="switchCvTab('experience',this)">💼 Experience</button>
+    <button class="cv-tab" onclick="switchCvTab('education',this)">🎓 Education</button>
+    <button class="cv-tab" onclick="switchCvTab('skills',this)">🔧 Skills</button>
+  </div>
+
+  <!-- Content -->
+  <div id="cv-editor-content" style="flex:1;overflow-y:auto;padding:24px 28px">
+
+    <!-- Profile Tab -->
+    <div id="cv-tab-profile" class="cv-tab-pane">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div class="cv-field-group" style="grid-column:1/-1">
+          <label class="cv-label">Full Name</label>
+          <input class="cv-input" id="cvp-name" placeholder="Your full name">
+        </div>
+        <div class="cv-field-group" style="grid-column:1/-1">
+          <label class="cv-label">Professional Title</label>
+          <input class="cv-input" id="cvp-title" placeholder="e.g. Civil Engineer">
+        </div>
+        <div class="cv-field-group">
+          <label class="cv-label">Email</label>
+          <input class="cv-input" id="cvp-email" type="email" placeholder="your@email.com">
+        </div>
+        <div class="cv-field-group">
+          <label class="cv-label">Phone</label>
+          <input class="cv-input" id="cvp-phone" placeholder="+234...">
+        </div>
+        <div class="cv-field-group">
+          <label class="cv-label">Location</label>
+          <input class="cv-input" id="cvp-location" placeholder="City, State">
+        </div>
+        <div class="cv-field-group">
+          <label class="cv-label">Years of Experience</label>
+          <input class="cv-input" id="cvp-years" type="number" min="0" max="50" placeholder="e.g. 8">
+        </div>
+        <div class="cv-field-group" style="grid-column:1/-1">
+          <label class="cv-label">LinkedIn URL</label>
+          <input class="cv-input" id="cvp-linkedin" placeholder="linkedin.com/in/yourname">
+        </div>
+      </div>
+    </div>
+
+    <!-- Experience Tab -->
+    <div id="cv-tab-experience" class="cv-tab-pane" style="display:none">
+      <div id="cv-exp-list"></div>
+      <button onclick="addCvExperience()"
+        style="margin-top:12px;background:transparent;border:1px dashed var(--border);color:var(--muted);
+               padding:10px;width:100%;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:2px;
+               transition:all 0.15s"
+        onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
+        + Add Experience
+      </button>
+    </div>
+
+    <!-- Education Tab -->
+    <div id="cv-tab-education" class="cv-tab-pane" style="display:none">
+      <div id="cv-edu-list"></div>
+      <button onclick="addCvEducation()"
+        style="margin-top:12px;background:transparent;border:1px dashed var(--border);color:var(--muted);
+               padding:10px;width:100%;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:2px;
+               transition:all 0.15s"
+        onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
+        + Add Education
+      </button>
+    </div>
+
+    <!-- Skills Tab -->
+    <div id="cv-tab-skills" class="cv-tab-pane" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">One skill per line</div>
+      <textarea id="cv-skills-input" rows="16"
+        style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);
+               color:var(--text);padding:12px;font-family:var(--mono);font-size:12px;
+               resize:vertical;border-radius:2px;outline:none;line-height:1.8"
+        placeholder="Site supervision&#10;AutoCAD&#10;Reinforced concrete&#10;..."></textarea>
+    </div>
+
+  </div>
+
+  <!-- Save indicator -->
+  <div id="cv-save-indicator" style="display:none;padding:10px 28px;background:#0d2a1a;
+       border-top:1px solid var(--accent);font-size:11px;color:var(--accent);text-align:center;flex-shrink:0">
+    ✓ Changes saved — download your CV to use them
+  </div>
+</div>
+
+<style>
+.cv-tab {
+  background:transparent;border:none;border-bottom:2px solid transparent;
+  color:var(--muted);padding:12px 20px;font-family:var(--mono);font-size:11px;
+  letter-spacing:0.5px;cursor:pointer;transition:all 0.15s;text-transform:uppercase;
+}
+.cv-tab:hover { color:var(--text); }
+.cv-tab.active { color:var(--accent);border-bottom-color:var(--accent); }
+.cv-tab-pane {}
+.cv-field-group { display:flex;flex-direction:column;gap:5px; }
+.cv-label { font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase; }
+.cv-input {
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  padding:9px 12px;font-family:var(--mono);font-size:12px;border-radius:2px;
+  outline:none;transition:border-color 0.15s;width:100%;box-sizing:border-box;
+}
+.cv-input:focus { border-color:var(--accent); }
+.cv-exp-card, .cv-edu-card {
+  border:1px solid var(--border);border-radius:3px;padding:16px;
+  margin-bottom:12px;background:var(--surface);
+}
+.cv-exp-card:hover, .cv-edu-card:hover { border-color:#444; }
+.cv-bullet-row { display:flex;gap:6px;align-items:flex-start;margin-bottom:6px; }
+.cv-bullet-input {
+  flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  padding:6px 10px;font-family:var(--mono);font-size:11px;border-radius:2px;
+  outline:none;line-height:1.5;
+}
+.cv-bullet-input:focus { border-color:var(--accent); }
+</style>
+
+<!-- ── Welcome / Upload Prompt Overlay ──────────────────────────────── -->
+<div id="welcome-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.82);
+     z-index:400;backdrop-filter:blur(4px);align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;
+              padding:40px 44px;max-width:480px;width:90vw;text-align:center">
+
+    <div style="font-family:var(--serif);font-size:28px;color:var(--accent);margin-bottom:6px">
+      Civil<span style="color:var(--muted);font-weight:300;font-style:italic">Apply</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:28px">
+      AI-powered CV tailoring for civil engineers
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:3px;padding:20px;margin-bottom:24px;text-align:left">
+      <div style="font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px">How it works</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <span style="color:var(--accent);font-size:16px;flex-shrink:0">①</span>
+          <span style="font-size:12px;color:var(--text);line-height:1.5">Upload your CV — we extract your profile, experience and skills</span>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <span style="color:var(--accent);font-size:16px;flex-shrink:0">②</span>
+          <span style="font-size:12px;color:var(--text);line-height:1.5">Paste any civil engineering job description</span>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <span style="color:var(--accent);font-size:16px;flex-shrink:0">③</span>
+          <span style="font-size:12px;color:var(--text);line-height:1.5">Get a tailored CV summary + cover letter matched to that job</span>
+        </div>
+      </div>
+    </div>
+
+    <input type="file" id="welcome-cv-input" accept=".pdf" style="display:none" onchange="welcomeUpload(this)">
+    <label for="welcome-cv-input"
+      style="display:block;background:var(--accent);color:#0e0f0c;padding:14px 28px;
+             border-radius:2px;font-family:var(--mono);font-size:13px;font-weight:600;
+             letter-spacing:1px;text-transform:uppercase;cursor:pointer;transition:all 0.15s;margin-bottom:12px"
+      onmouseover="this.style.background='#d8ff70'" onmouseout="this.style.background='var(--accent)'">
+      📄 Upload Your CV to Get Started
+    </label>
+
+    <div id="welcome-upload-status" style="font-size:11px;color:var(--muted);min-height:18px"></div>
+
+    <button onclick="skipWelcome()"
+      style="margin-top:16px;background:transparent;border:none;color:var(--muted);
+             font-family:var(--mono);font-size:10px;cursor:pointer;letter-spacing:0.5px;
+             text-decoration:underline;text-underline-offset:3px">
+      Skip — I'll upload later
+    </button>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 

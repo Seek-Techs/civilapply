@@ -1,0 +1,33 @@
+══════════════════════════════════════════════════════════════════════
+  BATCH RESULTS — Sikiru Yusuff Olatunji
+  4 jobs processed
+══════════════════════════════════════════════════════════════════════
+
+  ✅  APPLY FIRST
+  ──────────────────────────────────────────────────
+  rovanda.txt                Civil Construction Engineer      90/100  █████████████░░
+    Salary  : ₦600,000
+    Apply to: victor.f@rovedana.com
+    Output  : output/batch_results/rovanda.txt
+
+  oasis.txt                  Head of Projects                 60/100  █████████░░░░░░
+    Output  : output/batch_results/oasis.txt
+
+  piling.txt                 Construction Manager             60/100  █████████░░░░░░
+    Output  : output/batch_results/piling.txt
+
+
+  ❌  REJECTED — WRONG INDUSTRY OR TOO WEAK
+  ──────────────────────────────────────────────────
+  linkedin.txt               Project Engineer                 30/100  ████░░░░░░░░░░░
+    Output  : output/batch_results/linkedin.txt
+
+
+══════════════════════════════════════════════════════════════════════
+  HOW TO APPLY
+  ─────────────
+  1. Open the output file for each job in the APPLY FIRST list
+  2. Copy the CV Summary → paste into your CV Profile section
+  3. Copy the Cover Letter → open Yahoo Mail → Compose
+  4. Paste letter into body, attach your CV, send
+══════════════════════════════════════════════════════════════════════

@@ -1,0 +1,92 @@
+{
+  "profile": {
+    "name": "Yusuff Olatunji Sikiru",
+    "title": "Civil Engineer",
+    "experience_years": 12,
+    "email": "sikiru.yusuff@yahoo.com",
+    "phone": "07065264103",
+    "location": "Lagos, Nigeria",
+    "linkedin": "linkedin.com/in/sikiru-yusuff-olatunji"
+  },
+  "project_types": [
+    "construction",
+    "buildings",
+    "infrastructure"
+  ],
+  "experience": [
+    {
+      "role": "Civil Engineer",
+      "company": "Independent Project Monitoring Company (IPMC)",
+      "location": "Lagos, Nigeria",
+      "period": "2020 – Present",
+      "bullets": [
+        "- Reviewed structural drawings and ensured field implementation aligned with design intent",
+        "- Inspected reinforcement placement including bar spacing, lap lengths, and anchorage before concrete casting",
+        "- Verified dimensional compliance of structural elements prior to execution",
+        "- Identified discrepancies between drawings and site conditions and escalated technical clarifications",
+        "- Monitored reinforced concrete works including foundations, beams, slabs, and columns",
+        "- Prepared site technical reports relating to structural compliance"
+      ]
+    },
+    {
+      "role": "Civil / Site Engineer",
+      "company": "Nego Construction Nig. Ltd.",
+      "location": "AWA Health Centre, Akwa Ibom, Nigeria",
+      "period": "2018 – 2020",
+      "bullets": [
+        "- Supervised reinforced concrete works for foundations, columns, beams, and slab construction",
+        "- Ensured compliance of structural elements with approved drawings and specifications",
+        "- Coordinated with project teams to resolve structural detailing and implementation challenges"
+      ]
+    },
+    {
+      "role": "Structural Design Trainee",
+      "company": "Structural Design Office (Industrial Training)",
+      "period": "1 Year",
+      "bullets": [
+        "- Assisted structural engineers in preparation and review of reinforced concrete structural drawings",
+        "- Participated in manual structural calculations for slabs, beams, and columns under supervision",
+        "- Supported structural modeling and interpretation using ProtaStructure software",
+        "- Reviewed detailing requirements and reinforcement layouts prior to drawing issuance"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "degree": "Bachelor of Engineering (B.Eng.) in Civil Engineering",
+      "institution": "Federal University Oye Ekiti, Nigeria",
+      "year": "2025"
+    },
+    {
+      "degree": "Higher National Diploma (HND) in Civil Engineering",
+      "institution": "Lagos State Polytechnic, Ikorodu",
+      "year": "2012"
+    }
+  ],
+  "skills": [
+    "site supervision",
+    "reinforced concrete works",
+    "structural drawing review",
+    "reinforcement inspection",
+    "QA/QC compliance",
+    "HSE enforcement",
+    "ProtaStructure",
+    "AutoCAD",
+    "MS Excel",
+    "MS Project",
+    "Power BI",
+    "Python",
+    "structural calculations",
+    "concrete production oversight",
+    "setting out",
+    "site reporting"
+  ],
+  "structural_knowledge": [
+    "structural load paths and force transfer",
+    "bending moment and shear force in RC members",
+    "one-way and two-way slab behaviour",
+    "beam and column design principles",
+    "reinforcement detailing: development length, anchorage, lap splicing",
+    "load combinations and design considerations"
+  ]
+}
