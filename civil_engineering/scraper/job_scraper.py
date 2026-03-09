@@ -291,9 +291,101 @@ def scrape_myjobmag(max_pages=2):
     return jobs
 
 
+
+
+# ── NGCareers scraper ─────────────────────────────────────────────────────────
+NGCAREERS_SEARCHES = [
+    'https://ngcareers.com/jobs?q=civil+engineer',
+    'https://ngcareers.com/jobs?q=structural+engineer',
+    'https://ngcareers.com/jobs?q=site+engineer',
+    'https://ngcareers.com/jobs?q=quantity+surveyor',
+]
+
+def scrape_ngcareers(max_pages=2):
+    jobs, seen = [], set()
+
+    for base_url in NGCAREERS_SEARCHES:
+        for pg in range(1, max_pages + 1):
+            url = base_url if pg == 1 else f"{base_url}&page={pg}"
+            log.info(f"NGCareers: {url}")
+            r = _get(url)
+            if not r: break
+
+            soup = BeautifulSoup(r.text, 'html.parser')
+            new  = 0
+
+            # NGCareers: job cards with job title links
+            for a in soup.find_all('a', href=re.compile(r'/job/|/jobs/')):
+                href = a.get('href', '')
+                if not href: continue
+                if not href.startswith('http'): href = 'https://ngcareers.com' + href
+                if href in seen: continue
+                title = _clean(a.get_text())
+                if not title or len(title) < 5: continue
+                seen.add(href)
+                container = a.find_parent('div', class_=re.compile(r'job|card|listing', re.I)) or a.find_parent('li') or a
+                text = _clean(container.get_text()) if container else title
+                jobs.append({
+                    'title': title, 'company': '', 'location': _location(text),
+                    'salary': _salary(text), 'url': href,
+                    'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
+                    'source': 'NGCareers'
+                })
+                new += 1
+
+            log.info(f"  pg {pg}: {new} new jobs")
+            if new == 0: break
+
+    return jobs
+
+
+# ── HotNigerianJobs scraper ───────────────────────────────────────────────────
+HOTNG_SEARCHES = [
+    'https://www.hotnigerianobs.com/search/civil+engineer',
+    'https://www.hotnigerianobs.com/search/structural+engineer',
+    'https://www.hotnigerianobs.com/search/site+engineer',
+]
+
+def scrape_hotng(max_pages=1):
+    """HotNigerianJobs — server-rendered, straightforward HTML."""
+    jobs, seen = [], set()
+
+    for base_url in HOTNG_SEARCHES:
+        for pg in range(1, max_pages + 1):
+            url = base_url if pg == 1 else f"{base_url}/{pg}"
+            log.info(f"HotNigerianJobs: {url}")
+            r = _get(url)
+            if not r: break
+
+            soup = BeautifulSoup(r.text, 'html.parser')
+            new  = 0
+
+            for a in soup.find_all('a', href=re.compile(r'/jobs?/|/job-detail/', re.I)):
+                href = a.get('href', '')
+                if not href: continue
+                if not href.startswith('http'): href = 'https://www.hotnigerianjobs.com' + href
+                if href in seen: continue
+                title = _clean(a.get_text())
+                if not title or len(title) < 5: continue
+                seen.add(href)
+                container = a.find_parent('div', class_=re.compile(r'job|card|post|entry', re.I)) or a.find_parent('li') or a
+                text = _clean(container.get_text()) if container else title
+                jobs.append({
+                    'title': title, 'company': '', 'location': _location(text),
+                    'salary': _salary(text), 'url': href,
+                    'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
+                    'source': 'HotNigerianJobs'
+                })
+                new += 1
+
+            log.info(f"  pg {pg}: {new} new jobs")
+            if new == 0: break
+
+    return jobs
+
 # ── Public API ────────────────────────────────────────────────────────────────
 def fetch_jobs(sources=None, max_pages=2, force_refresh=False):
-    sources = [s.lower() for s in (sources or ['jobberman','myjobmag'])]
+    sources = [s.lower() for s in (sources or ['jobberman','myjobmag','ngcareers','hotng'])]
     key = _cache_key(sources)
     if not force_refresh:
         cached = _get_cached(key)
@@ -306,6 +398,12 @@ def fetch_jobs(sources=None, max_pages=2, force_refresh=False):
     if 'myjobmag' in sources:
         try: all_jobs.extend(scrape_myjobmag(max_pages))
         except Exception as e: log.error(f"MyJobMag failed: {e}")
+    if 'ngcareers' in sources:
+        try: all_jobs.extend(scrape_ngcareers(max_pages))
+        except Exception as e: log.error(f"NGCareers failed: {e}")
+    if 'hotng' in sources:
+        try: all_jobs.extend(scrape_hotng(max_pages))
+        except Exception as e: log.error(f"HotNigerianJobs failed: {e}")
 
     civil = [j for j in all_jobs if _is_civil(j)]
     seen, unique = set(), []

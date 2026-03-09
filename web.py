@@ -110,6 +110,37 @@ def _set_session_cv(sid, cv):
             _SESSION_CVS.pop(s, None)
             _SESSION_TS.pop(s, None)
 
+
+def _persist_cv_to_db(uid: str, cv: dict):
+    """Save CV JSON to users table for logged-in users. Fire-and-forget."""
+    if not uid:
+        return
+    try:
+        conn = _tracker_db()
+        conn.execute(
+            'UPDATE users SET cv_data=?, last_seen=datetime("now","localtime") WHERE id=?',
+            (json.dumps(cv), uid)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _load_cv_from_db(uid: str):
+    """Load CV JSON from DB. Returns dict or None."""
+    if not uid:
+        return None
+    try:
+        conn = _tracker_db()
+        row  = conn.execute('SELECT cv_data FROM users WHERE id=?', (uid,)).fetchone()
+        conn.close()
+        if row and row['cv_data']:
+            return json.loads(row['cv_data'])
+    except Exception:
+        pass
+    return None
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def _friendly_seniority(raw: str) -> str:
@@ -290,6 +321,10 @@ def upload_cv():
             session['cv_id'] = sid
         _set_session_cv(sid, parsed_cv)
         _log_event('cv_uploaded', {'skills': len(parsed_cv.get('skills', [])), 'exp': len(parsed_cv.get('experience', []))})
+        # Persist to DB if user is logged in
+        uid = session.get('user_id')
+        if uid:
+            _persist_cv_to_db(uid, parsed_cv)
 
         profile = parsed_cv['profile']
         return jsonify({
@@ -875,15 +910,17 @@ def _tracker_db():
         email         TEXT UNIQUE NOT NULL,
         name          TEXT DEFAULT '',
         password_hash TEXT DEFAULT '',
+        cv_data       TEXT DEFAULT '',
         created_at    TEXT DEFAULT (datetime('now', 'localtime')),
         last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
     )''')
-    # Migrate: add password_hash if upgrading old DB
-    try:
-        conn.execute('ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ""')
-        conn.commit()
-    except Exception:
-        pass
+    # Migrate: add new columns if upgrading old DB
+    for _col, _def in [('password_hash', 'TEXT DEFAULT ""'), ('cv_data', 'TEXT DEFAULT ""')]:
+        try:
+            conn.execute(f'ALTER TABLE users ADD COLUMN {_col} {_def}')
+            conn.commit()
+        except Exception:
+            pass
     conn.execute('''CREATE TABLE IF NOT EXISTS events (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id    TEXT DEFAULT '',
@@ -1034,6 +1071,10 @@ def cv_save():
         active_cv['skills'] = data['skills']
 
     _set_session_cv(sid, active_cv)
+    # Persist to DB if logged in
+    uid = session.get('user_id')
+    if uid:
+        _persist_cv_to_db(uid, active_cv)
     return jsonify({'status': 'ok'})
 
 
@@ -1199,6 +1240,11 @@ def auth_register():
         session['user_id']    = uid
         session['user_email'] = email
         session['user_name']  = name
+        # If they uploaded a CV before registering, persist it now
+        sid = session.get('cv_id')
+        existing_cv = _get_session_cv(sid) if sid else None
+        if existing_cv:
+            _persist_cv_to_db(uid, existing_cv)
         _log_event('register', {'email': email})
         return jsonify({'status': 'ok', 'user_id': uid, 'email': email, 'name': name})
     except Exception as e:
@@ -1230,9 +1276,19 @@ def auth_login():
         session['user_id']    = user['id']
         session['user_email'] = user['email']
         session['user_name']  = user['name']
+        # Restore saved CV into memory session
+        saved_cv = _load_cv_from_db(user['id'])
+        if saved_cv:
+            sid = session.get('cv_id')
+            if not sid:
+                import uuid as _uuid
+                sid = str(_uuid.uuid4())
+                session['cv_id'] = sid
+            _set_session_cv(sid, saved_cv)
         _log_event('login', {'email': email}, uid=user['id'])
         return jsonify({'status': 'ok', 'user_id': user['id'],
-                        'email': user['email'], 'name': user['name']})
+                        'email': user['email'], 'name': user['name'],
+                        'has_cv': bool(saved_cv)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
