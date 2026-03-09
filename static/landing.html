@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CivilApply — AI-Powered CV Tailoring for Civil Engineers in Nigeria</title>
+<meta name="description" content="Stop sending the same CV to every job. CivilApply reads the job description and rewrites your CV summary and cover letter to match — in seconds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,700;1,9..144,300;1,9..144,600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0e0f0c;
+  --surface: #161714;
+  --border:  #2a2b27;
+  --accent:  #c8f060;
+  --accent2: #f0a030;
+  --text:    #e8e8e2;
+  --muted:   #888880;
+  --mono:    'DM Mono', monospace;
+  --serif:   'Fraunces', Georgia, serif;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+/* ── NAV ── */
+nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  padding: 16px 40px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid transparent;
+  transition: all 0.3s;
+}
+nav.scrolled {
+  background: rgba(14,15,12,0.95);
+  border-bottom-color: var(--border);
+  backdrop-filter: blur(8px);
+}
+.nav-logo {
+  font-family: var(--serif);
+  font-size: 20px;
+  color: var(--text);
+  text-decoration: none;
+  letter-spacing: -0.5px;
+}
+.nav-logo span { color: var(--accent); }
+.nav-cta {
+  background: var(--accent);
+  color: #0e0f0c;
+  border: none;
+  padding: 8px 22px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.nav-cta:hover { background: #d8ff70; transform: translateY(-1px); }
+
+/* ── HERO ── */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 120px 40px 80px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Grid background */
+.hero::before {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 60px 60px;
+  opacity: 0.4;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 30%, transparent 100%);
+}
+
+/* Glow orb */
+.hero::after {
+  content: '';
+  position: absolute;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(200,240,96,0.07) 0%, transparent 70%);
+  top: 10%; left: 50%; transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.hero-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+
+.hero-eyebrow {
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hero-eyebrow::before {
+  content: '';
+  display: block;
+  width: 32px; height: 1px;
+  background: var(--accent);
+}
+
+h1 {
+  font-family: var(--serif);
+  font-size: clamp(44px, 7vw, 88px);
+  font-weight: 700;
+  line-height: 1.0;
+  letter-spacing: -2px;
+  color: var(--text);
+  margin-bottom: 32px;
+}
+h1 em {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--accent);
+}
+
+.hero-sub {
+  font-size: 15px;
+  color: var(--muted);
+  max-width: 520px;
+  line-height: 1.8;
+  margin-bottom: 48px;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #0e0f0c;
+  border: none;
+  padding: 16px 36px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  text-decoration: none;
+  display: inline-block;
+  transition: all 0.15s;
+}
+.btn-primary:hover { background: #d8ff70; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(200,240,96,0.2); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 15px 28px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  text-decoration: none;
+  display: inline-block;
+  transition: all 0.15s;
+}
+.btn-ghost:hover { border-color: var(--muted); color: var(--text); }
+
+.hero-note {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  margin-top: 20px;
+}
+.hero-note span { color: var(--accent); }
+
+/* ── STATS BAR ── */
+.stats-bar {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 28px 40px;
+  display: flex;
+  justify-content: center;
+  gap: 0;
+  overflow: hidden;
+}
+.stat {
+  flex: 1;
+  max-width: 220px;
+  text-align: center;
+  padding: 0 32px;
+  border-right: 1px solid var(--border);
+}
+.stat:last-child { border-right: none; }
+.stat-num {
+  font-family: var(--serif);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.stat-label {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* ── PROBLEM ── */
+.problem {
+  padding: 100px 40px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+.section-label {
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex; align-items: center; gap: 10px;
+}
+.section-label::after {
+  content: '';
+  flex: 1; height: 1px;
+  background: var(--border);
+  max-width: 60px;
+}
+
+h2 {
+  font-family: var(--serif);
+  font-size: clamp(28px, 4vw, 48px);
+  font-weight: 300;
+  line-height: 1.2;
+  color: var(--text);
+  margin-bottom: 20px;
+  letter-spacing: -1px;
+}
+h2 strong { font-weight: 700; }
+h2 em { font-style: italic; color: var(--accent2); }
+
+.problem-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 48px;
+}
+.problem-item {
+  background: var(--surface);
+  padding: 28px 32px;
+}
+.problem-item .icon {
+  font-size: 20px;
+  margin-bottom: 14px;
+}
+.problem-item h3 {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 8px;
+  letter-spacing: 0.3px;
+}
+.problem-item p {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+/* ── HOW IT WORKS ── */
+.how {
+  padding: 100px 40px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.how-inner {
+  max-width: 900px;
+  margin: 0 auto;
+}
+.steps {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 2px;
+  margin-top: 56px;
+  position: relative;
+}
+
+/* connector line */
+.steps::before {
+  content: '';
+  position: absolute;
+  top: 36px; left: calc(16.66% + 16px); right: calc(16.66% + 16px);
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent2) 50%, var(--accent) 100%);
+  opacity: 0.4;
+}
+
+.step {
+  padding: 32px 28px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  position: relative;
+  transition: border-color 0.2s;
+}
+.step:hover { border-color: #444; }
+
+.step-num {
+  width: 36px; height: 36px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  margin-bottom: 20px;
+  background: var(--bg);
+  position: relative; z-index: 1;
+}
+.step h3 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.step p {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+.step .tag {
+  display: inline-block;
+  margin-top: 16px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 2px;
+  background: #0d2a1a;
+  color: var(--accent);
+  border: 1px solid #1a5c30;
+}
+
+/* ── FEATURES ── */
+.features {
+  padding: 100px 40px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 56px;
+}
+.feature-card {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 28px 24px;
+  transition: all 0.2s;
+  cursor: default;
+}
+.feature-card:hover {
+  border-color: var(--accent);
+  background: rgba(200,240,96,0.02);
+  transform: translateY(-2px);
+}
+.feature-card .emoji { font-size: 22px; margin-bottom: 14px; }
+.feature-card h3 { font-size: 13px; font-weight: 500; color: var(--text); margin-bottom: 8px; }
+.feature-card p  { font-size: 11px; color: var(--muted); line-height: 1.7; }
+
+/* ── TESTIMONIAL ── */
+.testimonial {
+  padding: 80px 40px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+}
+.testimonial-inner { max-width: 680px; margin: 0 auto; }
+.quote-mark {
+  font-family: var(--serif);
+  font-size: 80px;
+  color: var(--accent);
+  line-height: 0.5;
+  margin-bottom: 28px;
+  opacity: 0.6;
+}
+.quote-text {
+  font-family: var(--serif);
+  font-size: clamp(18px, 2.5vw, 26px);
+  font-style: italic;
+  font-weight: 300;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 28px;
+}
+.quote-attr {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.quote-attr span { color: var(--accent); }
+
+/* ── CTA SECTION ── */
+.cta-section {
+  padding: 120px 40px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.cta-section::before {
+  content: '';
+  position: absolute;
+  width: 800px; height: 400px;
+  background: radial-gradient(ellipse, rgba(200,240,96,0.05) 0%, transparent 70%);
+  top: 0; left: 50%; transform: translateX(-50%);
+}
+.cta-inner {
+  max-width: 600px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+.cta-section h2 { margin-bottom: 16px; }
+.cta-section .sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 40px;
+  line-height: 1.7;
+}
+.cta-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+  margin: 0 auto 40px;
+  max-width: 340px;
+}
+.cta-check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.cta-check::before {
+  content: '✓';
+  color: var(--accent);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+/* ── FOOTER ── */
+footer {
+  padding: 32px 40px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.footer-logo {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--muted);
+}
+.footer-logo span { color: var(--accent); }
+.footer-copy {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+}
+.footer-links {
+  display: flex;
+  gap: 20px;
+}
+.footer-links a {
+  font-size: 10px;
+  color: var(--muted);
+  text-decoration: none;
+  letter-spacing: 0.5px;
+  transition: color 0.15s;
+}
+.footer-links a:hover { color: var(--text); }
+
+/* ── ANIMATIONS ── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.7s ease both; }
+.delay-1 { animation-delay: 0.1s; }
+.delay-2 { animation-delay: 0.2s; }
+.delay-3 { animation-delay: 0.35s; }
+.delay-4 { animation-delay: 0.5s; }
+.delay-5 { animation-delay: 0.65s; }
+
+/* Scroll reveal */
+.reveal { opacity: 0; transform: translateY(20px); transition: all 0.6s ease; }
+.reveal.visible { opacity: 1; transform: translateY(0); }
+
+/* ── MOBILE ── */
+@media (max-width: 768px) {
+  nav { padding: 14px 20px; }
+  .hero { padding: 100px 20px 60px; }
+  h1 { letter-spacing: -1px; }
+  .stats-bar { padding: 24px 20px; gap: 0; flex-wrap: wrap; }
+  .stat { min-width: 50%; border-right: none; border-bottom: 1px solid var(--border); padding: 16px; }
+  .stat:nth-child(odd) { border-right: 1px solid var(--border); }
+  .problem, .features, .cta-section { padding: 70px 20px; }
+  .how { padding: 70px 20px; }
+  .problem-grid { grid-template-columns: 1fr; }
+  .steps { grid-template-columns: 1fr; }
+  .steps::before { display: none; }
+  .features-grid { grid-template-columns: 1fr 1fr; }
+  footer { padding: 24px 20px; }
+}
+@media (max-width: 480px) {
+  .features-grid { grid-template-columns: 1fr; }
+  .hero-actions { flex-direction: column; align-items: flex-start; }
+  .btn-primary, .btn-ghost { width: 100%; text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="navbar">
+  <a class="nav-logo" href="/">Civil<span>Apply</span></a>
+  <a class="nav-cta" href="/app">Try Free →</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-inner">
+    <div class="hero-eyebrow fade-up">Built for Nigerian Civil Engineers</div>
+    <h1 class="fade-up delay-1">
+      Your CV,<br>
+      <em>tailored</em> to every<br>
+      job — in seconds.
+    </h1>
+    <p class="hero-sub fade-up delay-2">
+      Stop sending the same CV to every job. CivilApply reads the job description
+      and rewrites your CV summary and cover letter to match — for free.
+    </p>
+    <div class="hero-actions fade-up delay-3">
+      <a class="btn-primary" href="/app">Upload Your CV — It's Free</a>
+      <a class="btn-ghost" href="#how-it-works">See How It Works</a>
+    </div>
+    <p class="hero-note fade-up delay-4">
+      <span>No account required.</span> Upload your CV PDF and start in 30 seconds.
+    </p>
+  </div>
+</section>
+
+<!-- STATS -->
+<div class="stats-bar">
+  <div class="stat reveal">
+    <div class="stat-num">30s</div>
+    <div class="stat-label">Time to first tailored CV</div>
+  </div>
+  <div class="stat reveal">
+    <div class="stat-num">100%</div>
+    <div class="stat-label">Civil engineering focused</div>
+  </div>
+  <div class="stat reveal">
+    <div class="stat-num">Free</div>
+    <div class="stat-label">No credit card needed</div>
+  </div>
+  <div class="stat reveal">
+    <div class="stat-num">NG</div>
+    <div class="stat-label">Built for Nigeria's job market</div>
+  </div>
+</div>
+
+<!-- PROBLEM -->
+<section class="problem">
+  <div class="section-label">The Problem</div>
+  <h2>Recruiters spend <em>6 seconds</em> on your CV.<br><strong>Are you making them count?</strong></h2>
+  <div class="problem-grid">
+    <div class="problem-item reveal">
+      <div class="icon">📄</div>
+      <h3>Same CV, every application</h3>
+      <p>Most engineers send one generic CV everywhere. Recruiters can tell — and your application goes straight to the bottom.</p>
+    </div>
+    <div class="problem-item reveal">
+      <div class="icon">⏳</div>
+      <h3>Tailoring takes hours</h3>
+      <p>Rewriting your summary and cover letter for each job is time-consuming. So most people don't bother — and miss out.</p>
+    </div>
+    <div class="problem-item reveal">
+      <div class="icon">🔍</div>
+      <h3>ATS systems filter you out</h3>
+      <p>Many companies use software to screen CVs before a human sees them. If your keywords don't match the JD, you're invisible.</p>
+    </div>
+    <div class="problem-item reveal">
+      <div class="icon">🇳🇬</div>
+      <h3>Nigerian job boards, no smart tools</h3>
+      <p>Generic CV tools aren't built for Jobberman or Nigerian construction roles. CivilApply is.</p>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" id="how-it-works">
+  <div class="how-inner">
+    <div class="section-label">How It Works</div>
+    <h2>Three steps.<br><strong>One tailored application.</strong></h2>
+    <div class="steps">
+      <div class="step reveal">
+        <div class="step-num">1</div>
+        <h3>Upload your CV</h3>
+        <p>Drop in your existing PDF CV. We extract your experience, skills, and qualifications automatically.</p>
+        <span class="tag">PDF → parsed in seconds</span>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">2</div>
+        <h3>Paste the job description</h3>
+        <p>Copy the JD from Jobberman, MyJobMag, LinkedIn or anywhere else. Paste it in.</p>
+        <span class="tag">Any job board</span>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">3</div>
+        <h3>Download &amp; apply</h3>
+        <p>Get a tailored CV summary, a match score, and a ready-to-send cover letter. Download the PDF.</p>
+        <span class="tag">Apply by email or platform</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="features">
+  <div class="section-label">Features</div>
+  <h2>Everything a civil engineer<br><strong>needs to land the role.</strong></h2>
+  <div class="features-grid">
+    <div class="feature-card reveal">
+      <div class="emoji">🎯</div>
+      <h3>Match Score</h3>
+      <p>See exactly how well your profile fits the job before you apply. Skip the ones that are a poor fit.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="emoji">📄</div>
+      <h3>Tailored CV Summary</h3>
+      <p>AI rewrites your profile summary to mirror the language and priorities of the job description.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="emoji">✉️</div>
+      <h3>Cover Letter Generator</h3>
+      <p>A professional, job-specific cover letter ready to copy into your email. No blank page.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="emoji">🔍</div>
+      <h3>Live Job Scraper</h3>
+      <p>Browse live civil engineering jobs from Jobberman and MyJobMag without leaving the app.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="emoji">🚀</div>
+      <h3>Batch Apply</h3>
+      <p>Scan all matching jobs, select the best ones, and send tailored CVs to all of them at once.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="emoji">📋</div>
+      <h3>Application Tracker</h3>
+      <p>Track every application — status, notes, follow-up dates — in one place. Never lose track again.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TESTIMONIAL -->
+<section class="testimonial">
+  <div class="testimonial-inner reveal">
+    <div class="quote-mark">"</div>
+    <p class="quote-text">
+      I was sending the same CV to 20 companies and hearing nothing back.
+      CivilApply helped me see how poorly my CV matched the actual job descriptions.
+      First tailored application — I got a callback within 3 days.
+    </p>
+    <div class="quote-attr">
+      — <span>Civil Engineer, Lagos</span> · Site Supervision Role
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="cta-inner">
+    <div class="section-label" style="justify-content:center">Get Started</div>
+    <h2 style="margin-bottom:16px">Ready to stand out<br><em>in every application?</em></h2>
+    <p class="sub">No account needed. Upload your CV and tailor your first application in under a minute.</p>
+    <div class="cta-checklist reveal">
+      <div class="cta-check">Free to use — no credit card required</div>
+      <div class="cta-check">Works with your existing CV PDF</div>
+      <div class="cta-check">Built for Nigerian civil engineering roles</div>
+      <div class="cta-check">Takes less than 60 seconds to start</div>
+    </div>
+    <a class="btn-primary reveal" href="/app" style="font-size:13px;padding:18px 48px">
+      Start Tailoring Your CV →
+    </a>
+    <p style="margin-top:16px;font-size:10px;color:var(--muted)">
+      Jobberman · MyJobMag · LinkedIn · Any job board
+    </p>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">Civil<span>Apply</span></div>
+  <div class="footer-copy">© 2025 CivilApply · Built for Nigerian Civil Engineers</div>
+  <div class="footer-links">
+    <a href="/app">Launch App</a>
+    <a href="#how-it-works">How It Works</a>
+  </div>
+</footer>
+
+<script>
+// Navbar scroll effect
+var navbar = document.getElementById('navbar');
+window.addEventListener('scroll', function() {
+  navbar.classList.toggle('scrolled', window.scrollY > 40);
+});
+
+// Scroll reveal
+var observer = new IntersectionObserver(function(entries) {
+  entries.forEach(function(e) {
+    if (e.isIntersecting) {
+      e.target.classList.add('visible');
+      observer.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.reveal').forEach(function(el) {
+  observer.observe(el);
+});
+
+// Track CTA clicks
+document.querySelectorAll('a[href="/app"]').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    fetch('/track', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({event: 'landing_cta_click', meta: {source: this.className}})
+    }).catch(function(){});
+  });
+});
+</script>
+</body>
+</html>

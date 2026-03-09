@@ -28,7 +28,7 @@ def _load_env():
 
 _load_env()
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, send_from_directory
 
 from civil_engineering.job_parser                        import parse_job_description
 from civil_engineering.normalization.normalize_cv        import normalize_cv
@@ -193,6 +193,11 @@ def run_pipeline(raw_text: str, cv_override: dict | None = None) -> dict:
 # Flask builds the Yahoo URL and returns a redirect. No JS needed at all.────
 
 @app.route('/')
+def landing():
+    return send_from_directory('static', 'landing.html')
+
+
+@app.route('/app')
 def index():
     profile    = BASE_CV.get('profile', {})
     groq_key   = os.environ.get('GROQ_API_KEY', '')
