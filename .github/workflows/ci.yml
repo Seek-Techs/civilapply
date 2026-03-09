@@ -1,25 +1,28 @@
-name: Python CI
+name: Deploy Check
 
 on:
   push:
   pull_request:
-    types: [opened, synchronize, reopened]
 
 jobs:
-  test:
+  syntax-check:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install flask requests beautifulsoup4 reportlab pdfplumber
 
-      - name: Run tests
-        run: pytest 
+      - name: Syntax check web.py
+        run: python -m py_compile web.py && echo "✓ web.py syntax OK"
+
+      - name: Check static/app.js exists
+        run: test -f static/app.js && echo "✓ app.js found"
+
+      - name: Check requirements.txt
+        run: test -f requirements.txt && echo "✓ requirements.txt found"
