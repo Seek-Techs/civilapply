@@ -161,4 +161,11 @@ venv.bak/
 # Mono Auto Generated Files
 mono_crash.*
 
-job_applications/
+job_applications/applications.db 
+output/ 
+jobs/ 
+inputs/ 
+*.bak 
+__pycache__/ 
+venv/ 
+.env 
