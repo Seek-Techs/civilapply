@@ -317,22 +317,32 @@ async function loadJobs(forceRefresh) {
 function renderJobs(jobs) {
   var grid = document.getElementById('jobs-grid');
   if (!jobs.length) {
-    grid.innerHTML = '<div style="color:#888880;font-size:12px;padding:20px;">No civil engineering jobs found. Try refreshing.</div>';
+    grid.innerHTML = '<div style="color:#888880;font-size:12px;padding:20px;">No construction industry jobs found. Try refreshing.</div>';
     return;
   }
 
   var html = '';
   for (var i = 0; i < jobs.length; i++) {
     var j = jobs[i];
-    var sourceColor = j.source === 'Jobberman' ? '#c8f060' : '#60c8f0';
+    var _srcColors = {Jobberman:'#c8f060', MyJobMag:'#60c8f0', LinkedIn:'#0a66c2', NGCareers:'#f0a030', HotNigerianJobs:'#f06080'};
+    var sourceColor = _srcColors[j.source] || '#888880';
     var salaryHtml  = j.salary ? '<div style="color:#f0a030;font-size:11px;margin-top:4px;">' + esc(j.salary) + '</div>' : '';
     var companyHtml = j.company ? '<div style="font-size:11px;color:#888880;">' + esc(j.company) + '</div>' : '';
     var snippetHtml = j.snippet ? '<div style="font-size:10px;color:#888880;margin-top:6px;line-height:1.5;">' + esc(j.snippet.slice(0, 120)) + '...</div>' : '';
 
-    html += '<div style="background:#0e0f0c;border:1px solid #2a2b27;border-radius:3px;padding:14px;">';
+    var isApplied = window._appliedUrls && j.url && window._appliedUrls.has(j.url.trim());
+    var appliedBadge = isApplied
+      ? '<span style="font-size:9px;background:#0d2a1a;color:#4cde80;border:1px solid #1a5c30;padding:2px 7px;border-radius:2px;white-space:nowrap;">✓ Applied</span>'
+      : '';
+    var cardBorder = isApplied ? '1px solid #1a4a28' : '1px solid #2a2b27';
+    var cardBg     = isApplied ? '#0a1a10' : '#0e0f0c';
+    html += '<div style="background:' + cardBg + ';border:' + cardBorder + ';border-radius:3px;padding:14px;">';
     html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">';
     html += '<div style="font-size:12px;font-weight:500;color:#e8e8e2;line-height:1.4;">' + esc(j.title) + '</div>';
+    html += '<div style="display:flex;gap:4px;align-items:center;">';
+    html += appliedBadge;
     html += '<span style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:' + sourceColor + ';white-space:nowrap;border:1px solid ' + sourceColor + ';padding:1px 6px;border-radius:2px;">' + esc(j.source) + '</span>';
+    html += '</div>';
     html += '</div>';
     html += companyHtml;
     html += '<div style="font-size:10px;color:#888880;margin-top:2px;">' + esc(j.location) + ' &nbsp;·&nbsp; ' + esc(j.posted) + '</div>';
@@ -411,7 +421,15 @@ async function useJob(idx, btnEl) {
     jdInput.value = fallback;
   } finally {
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Use This Job'; }
+    // Scroll to top and highlight the generate button
+    var genBtn = document.getElementById('generate-btn') || document.querySelector('.btn-generate');
+    if (genBtn) {
+      genBtn.scrollIntoView({behavior: 'smooth', block: 'center'});
+      genBtn.style.boxShadow = '0 0 0 3px rgba(200,240,96,0.5)';
+      setTimeout(function() { genBtn.style.boxShadow = ''; }, 2000);
+    }
     jdInput.focus();
+    track('job_selected', {title: j.title, source: j.source || ''});
   }
 }
 
@@ -585,6 +603,10 @@ async function loadTracker() {
     var res  = await fetch('/tracker/list');
     var data = await res.json();
     _trackerData = Array.isArray(data) ? data : [];
+    // Build a fast-lookup set of applied job URLs for marking job cards
+    window._appliedUrls = new Set(
+      _trackerData.map(a => (a.url || '').trim()).filter(Boolean)
+    );
     renderTracker();
     updateTrackerBadge();
   } catch(e) {
@@ -749,6 +771,16 @@ function updateTrackerBadge() {
 
 // Load badge count on page load
 window.addEventListener('load', async () => {
+  // Pre-load tracker data silently so applied badges show on job cards immediately
+  (async function() {
+    try {
+      var r = await fetch('/tracker/list');
+      var d = await r.json();
+      _trackerData = Array.isArray(d) ? d : [];
+      window._appliedUrls = new Set(_trackerData.map(a => (a.url || '').trim()).filter(Boolean));
+    } catch(e) {}
+  })();
+
   // Check if this visitor already has a CV in session (returning user / page refresh)
   try {
     var sc = await fetch('/session-check');
@@ -889,13 +921,18 @@ function renderBatchResults(data) {
     var methodTag = job.can_email
       ? '<span style="font-size:9px;background:#0d2a1a;color:#4cde80;border:1px solid #1a5c30;padding:2px 7px;border-radius:8px">✉ Email</span>'
       : '<span style="font-size:9px;background:#1a1020;color:#a080f0;border:1px solid #3a2060;padding:2px 7px;border-radius:8px">🔗 Platform</span>';
+    var sourceColors = {Jobberman:'#c8f060', MyJobMag:'#60c8f0', NGCareers:'#f0a030', HotNigerianJobs:'#f06080'};
+    var srcColor = sourceColors[job.source] || 'var(--muted)';
+    var sourceTag = job.source
+      ? '<span style="font-size:9px;color:' + srcColor + ';border:1px solid ' + srcColor + ';padding:2px 6px;border-radius:8px;opacity:0.8">' + esc(job.source) + '</span>'
+      : '';
 
     card.innerHTML =
       (job.can_email ? '<input type="checkbox" class="batch-checkbox" data-idx="' + i + '" style="accent-color:var(--accent);flex-shrink:0;width:16px;height:16px" onchange="updateBatchCard(this)">' : '<div style="width:16px;flex-shrink:0"></div>') +
       '<div style="flex:1;min-width:0">' +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span style="font-weight:600;font-size:12px;color:var(--text)">' + esc(job.title) + '</span>' +
-          methodTag +
+          methodTag + sourceTag +
           (job.rank ? '<span style="font-size:9px;color:var(--muted);background:var(--bg);border:1px solid var(--border);padding:2px 6px;border-radius:8px">' + esc(job.rank.replace('_',' ')) + '</span>' : '') +
         '</div>' +
         '<div style="font-size:11px;color:var(--muted);margin-top:2px">' +

@@ -58,6 +58,26 @@ def _get(url, timeout=(6, 10)):
 
 def _clean(t): return ' '.join((t or '').split()).strip()
 
+def _company(card_el, fallback=''):
+    """Extract company name from a job card element."""
+    # Try common company containers
+    for sel in [
+        ('span', re.compile(r'company|employer|org', re.I)),
+        ('a',    re.compile(r'company|employer',     re.I)),
+        ('p',    re.compile(r'company|employer',     re.I)),
+        ('div',  re.compile(r'company|employer',     re.I)),
+        ('h4',   None),
+        ('h5',   None),
+    ]:
+        tag, cls = sel
+        el = card_el.find(tag, class_=cls) if cls else card_el.find(tag)
+        if el:
+            t = _clean(el.get_text())
+            # Reject if it looks like a title or location
+            if t and len(t) > 1 and len(t) < 80 and not any(x in t.lower() for x in ['engineer','manager','officer','lagos','abuja','apply']):
+                return t
+    return fallback
+
 def _parse_date(text):
     t = (text or '').lower()
     n = datetime.now()
@@ -76,23 +96,49 @@ def _location(text):
     m = re.search(r'\b(Lagos|Abuja|Port Harcourt|Ibadan|Kano|Ogun|Rivers|Delta|Enugu|Kaduna)\b', text or '', re.I)
     return (m.group(0) + ', Nigeria') if m else 'Nigeria'
 
-# ── Civil filter ──────────────────────────────────────────────────────────────
-CIVIL_KW = {
-    'civil engineer','structural engineer','site engineer','geotechnical',
-    'construction engineer','project engineer','quantity surveyor','infrastructure',
-    'site manager','reinforced concrete','autocad','coren','hse','road construction',
-    'bridge','drainage','foundation','structural design','construction management',
-    'building construction','site supervision'
+# ── Construction industry filter (all built environment professionals) ─────────
+CONSTRUCTION_KW = {
+    # Engineering disciplines
+    'civil engineer', 'structural engineer', 'site engineer', 'geotechnical engineer',
+    'construction engineer', 'project engineer', 'building engineer',
+    'mechanical engineer', 'electrical engineer', 'm&e engineer',
+    'environmental engineer', 'water engineer', 'sanitation engineer',
+    # Surveying & estimation
+    'quantity surveyor', 'land surveyor', 'building surveyor', 'estimator',
+    'cost engineer', 'cost planner', 'bim',
+    # Architecture & design
+    'architect', 'architectural', 'urban planner', 'town planner',
+    # Management & supervision
+    'project manager', 'construction manager', 'site manager', 'site supervisor',
+    'contracts manager', 'planning engineer', 'planning manager',
+    'project coordinator', 'construction coordinator',
+    # Safety & compliance
+    'hse officer', 'hse manager', 'safety officer', 'health and safety',
+    'coren', 'corbon',
+    # Trades & specialist roles
+    'foreman', 'works supervisor', 'clerk of works', 'site agent',
+    'procurement officer', 'infrastructure', 'roads', 'bridge',
+    # Keywords that appear in construction JDs
+    'construction', 'building construction', 'road construction',
+    'reinforced concrete', 'autocad', 'revit', 'structural design',
+    'foundation', 'drainage', 'site supervision',
 }
 EXCL_KW = {
-    'software engineer','software developer','web developer','frontend developer',
-    'backend developer','data scientist','accountant','marketing manager',
-    'nurse','teacher','sales executive'
+    'software engineer', 'software developer', 'web developer', 'frontend developer',
+    'backend developer', 'full stack', 'mobile developer', 'android developer',
+    'data scientist', 'data analyst', 'machine learning',
+    'accountant', 'auditor', 'finance manager', 'marketing manager',
+    'nurse', 'doctor', 'pharmacist', 'teacher', 'lecturer',
+    'sales executive', 'business development', 'customer service',
+    'legal officer', 'lawyer', 'hr manager', 'human resources',
 }
 
-def _is_civil(job):
-    t = (job.get('title','') + ' ' + job.get('snippet','')).lower()
-    return any(k in t for k in CIVIL_KW) and not any(k in t for k in EXCL_KW)
+def _is_construction(job):
+    t = (job.get('title', '') + ' ' + job.get('snippet', '')).lower()
+    return any(k in t for k in CONSTRUCTION_KW) and not any(k in t for k in EXCL_KW)
+
+# Keep alias for backward compatibility
+_is_civil = _is_construction
 
 # ── Jobberman scraper ─────────────────────────────────────────────────────────
 # Jobberman is Next.js — it renders server-side for some pages.
@@ -103,6 +149,10 @@ JOBBERMAN_SEARCHES = [
     'https://www.jobberman.com/jobs?q=civil+engineer&l=Nigeria',
     'https://www.jobberman.com/jobs?q=structural+engineer&l=Nigeria',
     'https://www.jobberman.com/jobs?q=site+engineer&l=Nigeria',
+    'https://www.jobberman.com/jobs?q=quantity+surveyor&l=Nigeria',
+    'https://www.jobberman.com/jobs?q=architect+construction&l=Nigeria',
+    'https://www.jobberman.com/jobs?q=project+manager+construction&l=Nigeria',
+    'https://www.jobberman.com/jobs?q=hse+officer&l=Nigeria',
 ]
 
 def scrape_jobberman(max_pages=2):
@@ -221,7 +271,8 @@ def _parse_jobberman_html(soup, seen, jobs):
             seen.add(href)
             container = a.find_parent('div') or a.find_parent('li') or a
             text = _clean(container.get_text())
-            jobs.append({'title': title, 'company': '', 'location': _location(text),
+            company = _company(container)
+            jobs.append({'title': title, 'company': company, 'location': _location(text),
                          'salary': _salary(text), 'url': url,
                          'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
                          'source': 'Jobberman'})
@@ -238,9 +289,10 @@ def _parse_jobberman_html(soup, seen, jobs):
         title_el = card.find(['h2','h3','h4'])
         title    = _clean(title_el.get_text()) if title_el else _clean(href_el.get_text())
         if not title or len(title) < 4: continue
-        text     = _clean(card.get_text())
-        date_el  = card.find('time') or card.find(class_=re.compile(r'date|posted|ago', re.I))
-        jobs.append({'title': title, 'company': '', 'location': _location(text),
+        text      = _clean(card.get_text())
+        company   = _company(card)
+        date_el   = card.find('time') or card.find(class_=re.compile(r'date|posted|ago', re.I))
+        jobs.append({'title': title, 'company': company, 'location': _location(text),
                      'salary': _salary(text), 'url': url,
                      'snippet': text[:280],
                      'posted': _parse_date(date_el.get_text() if date_el else ''),
@@ -255,6 +307,10 @@ MYJOBMAG_SEARCHES = [
     'https://www.myjobmag.com/jobs/structural+engineer/nigeria',
     'https://www.myjobmag.com/jobs/site+engineer/nigeria',
     'https://www.myjobmag.com/jobs/quantity+surveyor/nigeria',
+    'https://www.myjobmag.com/jobs/architect/nigeria',
+    'https://www.myjobmag.com/jobs/project+manager+construction/nigeria',
+    'https://www.myjobmag.com/jobs/hse+officer/nigeria',
+    'https://www.myjobmag.com/jobs/land+surveyor/nigeria',
 ]
 
 def scrape_myjobmag(max_pages=2):
@@ -279,7 +335,8 @@ def scrape_myjobmag(max_pages=2):
                 seen.add(href)
                 container = a.find_parent('div', class_=re.compile(r'job|listing|card', re.I)) or a.find_parent('li') or a
                 text = _clean(container.get_text()) if container else title
-                jobs.append({'title': title, 'company': '', 'location': _location(text),
+                company = _company(container)
+                jobs.append({'title': title, 'company': company, 'location': _location(text),
                              'salary': _salary(text), 'url': href,
                              'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
                              'source': 'MyJobMag'})
@@ -299,6 +356,9 @@ NGCAREERS_SEARCHES = [
     'https://ngcareers.com/jobs?q=structural+engineer',
     'https://ngcareers.com/jobs?q=site+engineer',
     'https://ngcareers.com/jobs?q=quantity+surveyor',
+    'https://ngcareers.com/jobs?q=architect+construction',
+    'https://ngcareers.com/jobs?q=project+manager+construction',
+    'https://ngcareers.com/jobs?q=hse+officer+construction',
 ]
 
 def scrape_ngcareers(max_pages=2):
@@ -325,8 +385,9 @@ def scrape_ngcareers(max_pages=2):
                 seen.add(href)
                 container = a.find_parent('div', class_=re.compile(r'job|card|listing', re.I)) or a.find_parent('li') or a
                 text = _clean(container.get_text()) if container else title
+                company = _company(container)
                 jobs.append({
-                    'title': title, 'company': '', 'location': _location(text),
+                    'title': title, 'company': company, 'location': _location(text),
                     'salary': _salary(text), 'url': href,
                     'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
                     'source': 'NGCareers'
@@ -370,8 +431,9 @@ def scrape_hotng(max_pages=1):
                 seen.add(href)
                 container = a.find_parent('div', class_=re.compile(r'job|card|post|entry', re.I)) or a.find_parent('li') or a
                 text = _clean(container.get_text()) if container else title
+                company = _company(container)
                 jobs.append({
-                    'title': title, 'company': '', 'location': _location(text),
+                    'title': title, 'company': company, 'location': _location(text),
                     'salary': _salary(text), 'url': href,
                     'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
                     'source': 'HotNigerianJobs'
@@ -383,9 +445,140 @@ def scrape_hotng(max_pages=1):
 
     return jobs
 
+
+
+# ── LinkedIn scraper (public RSS + HTML fallback) ─────────────────────────────
+# LinkedIn serves public job listings without authentication for search results.
+# We use their public search pages which embed JSON-LD structured data.
+# No login required. No API key. Works on Render.
+# Rate limit: 1 request/sec already enforced by _get() sleep.
+
+LINKEDIN_SEARCHES = [
+    # Civil & structural
+    'https://www.linkedin.com/jobs/civil-engineer-jobs-nigeria',
+    'https://www.linkedin.com/jobs/structural-engineer-jobs-nigeria',
+    'https://www.linkedin.com/jobs/site-engineer-jobs-nigeria',
+    # Broader construction
+    'https://www.linkedin.com/jobs/quantity-surveyor-jobs-nigeria',
+    'https://www.linkedin.com/jobs/construction-project-manager-jobs-nigeria',
+    'https://www.linkedin.com/jobs/architect-jobs-nigeria',
+    'https://www.linkedin.com/jobs/hse-officer-jobs-nigeria',
+]
+
+def scrape_linkedin(max_pages=1):
+    """
+    Scrape LinkedIn public job search pages.
+    LinkedIn serves server-rendered HTML for these URLs (no JS required).
+    Each card has: data-entity-urn, job title in <h3>, company in <h4>,
+    location in <span class="job-search-card__location">.
+    Falls back to JSON-LD if card structure changes.
+    """
+    import xml.etree.ElementTree as ET
+    jobs, seen = [], set()
+
+    for base_url in LINKEDIN_SEARCHES:
+        for pg in range(max_pages):
+            url = base_url if pg == 0 else f"{base_url}?start={pg * 25}"
+            log.info(f"LinkedIn: {url}")
+            r = _get(url)
+            if not r:
+                break
+
+            soup = BeautifulSoup(r.text, 'html.parser')
+            new  = 0
+
+            # Method 1: LinkedIn job cards (class="base-card" or "job-search-card")
+            cards = soup.find_all('div', class_=re.compile(r'base-card|job-search-card', re.I))
+            if not cards:
+                # Method 2: <li> elements with data-entity-urn
+                cards = soup.find_all('li', attrs={'data-entity-urn': True})
+
+            for card in cards:
+                # Title — in <h3> or <a class="base-card__full-link">
+                title_el = card.find('h3') or card.find('a', class_=re.compile(r'base-card__full-link|job.*title', re.I))
+                title = _clean(title_el.get_text()) if title_el else ''
+                if not title or len(title) < 4:
+                    continue
+
+                # URL
+                link_el = card.find('a', href=re.compile(r'/jobs/view/'))
+                href = link_el.get('href', '').split('?')[0] if link_el else ''
+                if not href:
+                    href = card.get('data-entity-urn', '')
+                if not href or href in seen:
+                    continue
+                seen.add(href)
+
+                # Company — in <h4> or <a class="hidden-nested-link">
+                company_el = card.find('h4') or card.find('a', class_=re.compile(r'hidden-nested-link', re.I))
+                company = _clean(company_el.get_text()) if company_el else ''
+
+                # Location
+                loc_el = card.find('span', class_=re.compile(r'location|job-search-card__location', re.I))
+                location = _clean(loc_el.get_text()) if loc_el else 'Nigeria'
+
+                # Posted date
+                time_el = card.find('time')
+                posted_raw = time_el.get('datetime', '') if time_el else ''
+                posted = posted_raw[:10] if posted_raw else datetime.now().strftime('%Y-%m-%d')
+
+                text = title + ' ' + company + ' ' + location
+                jobs.append({
+                    'title':    title,
+                    'company':  company,
+                    'location': location if 'nigeria' in location.lower() else location + ', Nigeria',
+                    'salary':   '',
+                    'url':      href if href.startswith('http') else 'https://www.linkedin.com' + href,
+                    'snippet':  text[:280],
+                    'posted':   posted,
+                    'source':   'LinkedIn',
+                })
+                new += 1
+
+            # Method 3: JSON-LD fallback (LinkedIn embeds structured data)
+            if new == 0:
+                for script in soup.find_all('script', type='application/ld+json'):
+                    try:
+                        import json as _json
+                        data = _json.loads(script.string or '{}')
+                        items = data if isinstance(data, list) else [data]
+                        for item in items:
+                            if item.get('@type') != 'JobPosting':
+                                continue
+                            title   = _clean(item.get('title', ''))
+                            company = _clean((item.get('hiringOrganization') or {}).get('name', ''))
+                            loc     = (item.get('jobLocation') or {})
+                            if isinstance(loc, list): loc = loc[0] if loc else {}
+                            location = _clean((loc.get('address') or {}).get('addressLocality', 'Nigeria'))
+                            url     = item.get('url', '')
+                            if not title or not url or url in seen:
+                                continue
+                            seen.add(url)
+                            posted = (item.get('datePosted') or datetime.now().strftime('%Y-%m-%d'))[:10]
+                            text   = title + ' ' + company
+                            jobs.append({
+                                'title':    title,
+                                'company':  company,
+                                'location': location,
+                                'salary':   '',
+                                'url':      url,
+                                'snippet':  text[:280],
+                                'posted':   posted,
+                                'source':   'LinkedIn',
+                            })
+                            new += 1
+                    except Exception:
+                        pass
+
+            log.info(f"  pg {pg+1}: {new} new jobs from LinkedIn")
+            if new == 0:
+                break
+
+    return jobs
+
 # ── Public API ────────────────────────────────────────────────────────────────
 def fetch_jobs(sources=None, max_pages=2, force_refresh=False):
-    sources = [s.lower() for s in (sources or ['jobberman','myjobmag','ngcareers','hotng'])]
+    sources = [s.lower() for s in (sources or ['jobberman','myjobmag','ngcareers','hotng','linkedin'])]
     key = _cache_key(sources)
     if not force_refresh:
         cached = _get_cached(key)
@@ -404,8 +597,11 @@ def fetch_jobs(sources=None, max_pages=2, force_refresh=False):
     if 'hotng' in sources:
         try: all_jobs.extend(scrape_hotng(max_pages))
         except Exception as e: log.error(f"HotNigerianJobs failed: {e}")
+    if 'linkedin' in sources:
+        try: all_jobs.extend(scrape_linkedin(max_pages))
+        except Exception as e: log.error(f"LinkedIn failed: {e}")
 
-    civil = [j for j in all_jobs if _is_civil(j)]
+    civil = [j for j in all_jobs if _is_construction(j)]
     seen, unique = set(), []
     for j in civil:
         k = j.get('url') or j.get('title','')

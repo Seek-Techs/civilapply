@@ -696,9 +696,9 @@ def send_application():
 @app.route('/batch-preview', methods=['POST'])
 def batch_preview():
     """
-    Scrape jobs, run pipeline on each, return ranked list filtered by:
-    - confidence >= min_confidence (default 60)
-    - job has an apply email OR url (we send to email ones, link to platform ones)
+    Scrape jobs, score each against CV, return ranked list.
+    Uses job title + snippet for fast scoring — no full JD fetch needed.
+    Pipeline fields fall back to raw scraper data for title/company/location.
     """
     if not _check_rate(request.remote_addr):
         return jsonify({'status': 'error', 'message': 'Too many requests. Please wait.'})
@@ -709,7 +709,10 @@ def batch_preview():
 
     try:
         from civil_engineering.scraper.job_scraper import fetch_jobs
-        jobs = fetch_jobs(sources=['jobberman', 'myjobmag'], max_pages=2, force_refresh=False)
+        jobs = fetch_jobs(
+            sources=['jobberman', 'myjobmag', 'ngcareers', 'hotng', 'linkedin'],
+            max_pages=2, force_refresh=False
+        )
     except Exception as e:
         return jsonify({'status': 'error', 'message': f'Scraping failed: {e}'})
 
@@ -721,10 +724,14 @@ def batch_preview():
     skipped   = 0
 
     for job in jobs:
-        snippet = ' '.join([
-            job.get('title',''), job.get('company',''), job.get('location',''),
-            job.get('snippet',''), job.get('salary','')
-        ])
+        # Use title + snippet + salary for scoring — richer than title alone
+        snippet = ' '.join(filter(None, [
+            job.get('title', ''),
+            job.get('company', ''),
+            job.get('location', ''),
+            job.get('snippet', ''),
+            job.get('salary', ''),
+        ]))
         try:
             pipeline = run_pipeline(snippet, cv_override=active_cv)
         except Exception:
@@ -740,24 +747,32 @@ def batch_preview():
             skipped += 1
             continue
 
-        apply_email = pipeline.get('job', {}).get('email') or job.get('email') or ''
+        # Prefer raw scraper data for title/company/location —
+        # pipeline parses from snippet which may be thin
+        title    = job.get('title') or pipeline['job'].get('title') or 'Unknown'
+        company  = job.get('company') or pipeline['job'].get('company') or ''
+        location = job.get('location') or pipeline['job'].get('location') or ''
+        salary   = job.get('salary') or pipeline['job'].get('salary') or ''
+
+        apply_email = job.get('email') or pipeline.get('job', {}).get('email') or ''
 
         if email_only and not apply_email:
             skipped += 1
             continue
 
         results.append({
-            'title':       pipeline['job'].get('title') or job.get('title', 'Unknown'),
-            'company':     pipeline['job'].get('company') or job.get('company', ''),
-            'location':    pipeline['job'].get('location') or job.get('location', ''),
-            'salary':      pipeline['job'].get('salary') or job.get('salary', ''),
-            'url':         job.get('url', ''),
-            'apply_email': apply_email,
-            'confidence':  confidence,
-            'rank':        pipeline['match'].get('rank', ''),
-            'cv_summary':  pipeline.get('cv_summary', ''),
+            'title':        title,
+            'company':      company,
+            'location':     location,
+            'salary':       salary,
+            'source':       job.get('source', ''),
+            'url':          job.get('url', ''),
+            'apply_email':  apply_email,
+            'confidence':   confidence,
+            'rank':         pipeline['match'].get('rank', ''),
+            'cv_summary':   pipeline.get('cv_summary', ''),
             'cover_letter': pipeline.get('cover_letter', ''),
-            'can_email':   bool(apply_email),
+            'can_email':    bool(apply_email),
         })
 
     results.sort(key=lambda x: x['confidence'], reverse=True)
@@ -914,6 +929,29 @@ def _tracker_db():
         created_at    TEXT DEFAULT (datetime('now', 'localtime')),
         last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
     )''')
+    # Migrate: rebuild users table if it was created without 'id' column
+    # (this happens when Render's persistent DB was created by an older deploy)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if 'id' not in cols:
+            conn.execute('''CREATE TABLE IF NOT EXISTS users_new (
+                id            TEXT PRIMARY KEY,
+                email         TEXT UNIQUE NOT NULL,
+                name          TEXT DEFAULT '',
+                password_hash TEXT DEFAULT '',
+                cv_data       TEXT DEFAULT '',
+                created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+                last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
+            )''')
+            # Copy whatever columns exist in old table
+            old_cols = set(cols) & {'email', 'name', 'password_hash', 'cv_data', 'created_at', 'last_seen'}
+            col_list = ', '.join(old_cols)
+            conn.execute(f'INSERT OR IGNORE INTO users_new ({col_list}) SELECT {col_list} FROM users')
+            conn.execute('DROP TABLE users')
+            conn.execute('ALTER TABLE users_new RENAME TO users')
+            conn.commit()
+    except Exception:
+        pass
     # Migrate: add new columns if upgrading old DB
     for _col, _def in [('password_hash', 'TEXT DEFAULT ""'), ('cv_data', 'TEXT DEFAULT ""')]:
         try:
@@ -953,7 +991,7 @@ def tracker_add():
         return jsonify({'status': 'error', 'message': 'Job title required'})
     try:
         conn = _tracker_db()
-        uid = session.get('cv_id', 'anonymous')
+        uid = session.get('user_id') or session.get('cv_id', 'anonymous')
         conn.execute(
             '''INSERT INTO applications (title, company, location, salary, url, platform, method, status, notes, user_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
