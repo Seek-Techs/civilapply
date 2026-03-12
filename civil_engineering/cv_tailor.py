@@ -158,7 +158,7 @@ def _post_json(url: str, payload: dict, headers: dict) -> dict:
     """
     data = json.dumps(payload).encode("utf-8")
     req  = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=40) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -395,18 +395,7 @@ def ai_rewrite_cv(cv: dict, job: dict, intelligence: dict,
     """
     prompt = _build_prompt(cv, job, intelligence)
 
-    # ── 1. Ollama (offline) ───────────────────────────────────────────────────
-    try:
-        result = _call_ollama(prompt)
-        result["provider"] = "ollama (offline)"
-        logger.info("CV tailored via Ollama")
-        return result
-    except ConnectionError:
-        pass  # Ollama not running — silently skip
-    except Exception as e:
-        logger.warning("Ollama failed: %s", e)
-
-    # ── 2. Cohere (free cloud) ────────────────────────────────────────────────
+    # ── 1. Cohere (free cloud) — checked first for speed ─────────────────────
     cohere_key = os.environ.get("COHERE_API_KEY", "").strip()
     if cohere_key:
         try:
@@ -417,7 +406,7 @@ def ai_rewrite_cv(cv: dict, job: dict, intelligence: dict,
         except Exception as e:
             logger.warning("Cohere failed: %s", e)
 
-    # ── 3. Groq (free cloud, may be blocked) ─────────────────────────────────
+    # ── 2. Groq (free cloud) ─────────────────────────────────────────────────
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
     if groq_key:
         try:
@@ -427,6 +416,18 @@ def ai_rewrite_cv(cv: dict, job: dict, intelligence: dict,
             return result
         except Exception as e:
             logger.warning("Groq failed: %s", e)
+
+    # ── 3. Ollama (offline, last resort — only if cloud fails) ───────────────
+    if not os.environ.get("SKIP_OLLAMA"):
+        try:
+            result = _call_ollama(prompt)
+            result["provider"] = "ollama (offline)"
+            logger.info("CV tailored via Ollama")
+            return result
+        except ConnectionError:
+            pass  # Ollama not running — silently skip
+        except Exception as e:
+            logger.warning("Ollama failed: %s", e)
 
     # ── 4. Anthropic (paid) ───────────────────────────────────────────────────
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", api_key).strip()

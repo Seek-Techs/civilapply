@@ -253,23 +253,27 @@ def _call_cohere_extract(cv_text: str, api_key: str) -> dict | None:
         }
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
+    for attempt in range(2):   # 1 retry on timeout
+        try:
+            with urllib.request.urlopen(req, timeout=35) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
 
-        raw = (data
-               .get('message', {})
-               .get('content', [{}])[0]
-               .get('text', ''))
+            raw = (data
+                   .get('message', {})
+                   .get('content', [{}])[0]
+                   .get('text', ''))
 
-        # Strip markdown fences if present
-        raw = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.MULTILINE)
-        raw = re.sub(r'\s*```$', '', raw.strip(), flags=re.MULTILINE)
+            raw = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.MULTILINE)
+            raw = re.sub(r'\s*```$', '', raw.strip(), flags=re.MULTILINE)
+            return json.loads(raw)
 
-        return json.loads(raw)
-
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
-        return None
+        except urllib.error.URLError as e:
+            if attempt == 0 and 'timed out' in str(e).lower():
+                continue   # one retry on timeout
+            return None
+        except (urllib.error.HTTPError, json.JSONDecodeError):
+            return None
+    return None
 
 
 def _rule_based_fallback(text: str) -> dict:
@@ -336,24 +340,32 @@ def parse_cv_pdf(pdf_path: str) -> dict:
         ai_data = _rule_based_fallback(raw_text)
 
     # ── Assemble final dict ───────────────────────────────────────────────
+    # Sanitise AI output: filter None entries from lists, coerce None strings to ''
+    _sl  = lambda v: v if isinstance(v, list) else []
+    _ss  = lambda v: v if isinstance(v, str)  else ''
+    experience = [r for r in _sl(ai_data.get('experience')) if isinstance(r, dict)]
+    education  = [e for e in _sl(ai_data.get('education'))  if isinstance(e, dict)]
+    skills     = [s for s in _sl(ai_data.get('skills'))     if s and isinstance(s, str)]
+    struct_kn  = [k for k in _sl(ai_data.get('structural_knowledge')) if k and isinstance(k, str)]
+
     return {
         'profile': {
-            'name':               name,
-            'title':              title,
-            'experience_years':   years,
-            'email':              email,
-            'phone':              phone,
-            'location':           location,
-            'linkedin':           linkedin,
+            'name':               name     or '',
+            'title':              title    or '',
+            'experience_years':   years    or 0,
+            'email':              email    or '',
+            'phone':              phone    or '',
+            'location':           location or '',
+            'linkedin':           linkedin or '',
         },
         'project_types':        ['construction', 'buildings', 'infrastructure'],
-        'experience':           ai_data.get('experience', []),
-        'education':            ai_data.get('education', []),
-        'skills':               ai_data.get('skills', []),
-        'structural_knowledge': ai_data.get('structural_knowledge', []),
-        'summary':              ai_data.get('summary', ''),
+        'experience':           experience,
+        'education':            education,
+        'skills':               skills,
+        'structural_knowledge': struct_kn,
+        'summary':              _ss(ai_data.get('summary')),
         '_source':              'uploaded_cv',
-        '_raw_text':            raw_text[:2000],  # store for debugging
+        '_raw_text':            raw_text[:2000],
     }
 
 
@@ -408,16 +420,17 @@ def detect_cv_industry(cv: dict) -> dict:
         'law':          ['lawyer', 'barrister', 'solicitor', 'litigation', 'legal'],
     }
 
-    # Build search text from CV
+    # Build search text from CV — guard against None values from AI extraction
     text_parts = []
-    profile = cv.get('profile', {})
-    text_parts.append(profile.get('title', '').lower())
-    text_parts.append(cv.get('summary', '').lower())
-    for role in cv.get('experience', []):
-        text_parts.append(role.get('role', '').lower())
-        text_parts.append(role.get('company', '').lower())
-        text_parts += [b.lower() for b in role.get('bullets', [])]
-    text_parts += [s.lower() for s in cv.get('skills', [])]
+    profile = cv.get('profile') or {}
+    text_parts.append((profile.get('title') or '').lower())
+    text_parts.append((cv.get('summary') or '').lower())
+    for role in (cv.get('experience') or []):
+        if not isinstance(role, dict): continue
+        text_parts.append((role.get('role') or '').lower())
+        text_parts.append((role.get('company') or '').lower())
+        text_parts += [(b or '').lower() for b in (role.get('bullets') or [])]
+    text_parts += [(s or '').lower() for s in (cv.get('skills') or [])]
     search = ' '.join(text_parts)
 
     civil_score    = sum(1 for s in CIVIL_SIGNALS    if s in search)

@@ -3,9 +3,13 @@ import re
 from civil_engineering.domain.job import ParsedJob
 
 ROLE_KEYWORDS = {
-    # Compound/specific titles first — longer patterns matched before shorter ones
+    # Compound/specific titles — checked first (longest match wins)
     "Civil Construction Engineer": ["civil construction engineer"],
     "Structural Design Engineer":  ["structural design engineer"],
+    "Head of Projects":            ["head of projects", "head of civil", "head of construction"],
+    "Senior Site Engineer":        ["senior site engineer"],
+    "Senior Civil Engineer":       ["senior civil engineer"],
+    "Senior Project Engineer":     ["senior project engineer"],
     "Site Engineer":               ["site engineer"],
     "Civil Engineer":              ["civil engineer"],
     "Structural Engineer":         ["structural engineer"],
@@ -14,7 +18,7 @@ ROLE_KEYWORDS = {
     "Resident Engineer":           ["resident engineer"],
     "Infrastructure Engineer":     ["infrastructure engineer"],
     "Graduate Engineer":           ["graduate engineer", "grad engineer"],
-    "Senior Engineer":             ["senior engineer", "senior civil", "senior site"],
+    "Senior Engineer":             ["senior engineer"],
     "Principal Engineer":          ["principal engineer"],
     "Quantity Surveyor":           ["quantity surveyor", "qs "],
     "Site Manager":                ["site manager"],
@@ -73,16 +77,19 @@ def _extract_title(text: str) -> str | None:
         text, re.IGNORECASE
     )
     if label_match:
-        raw = label_match.group(1).strip()
-        # Match the extracted text against known roles
-        raw_lower = raw.lower()
-        for role, patterns in ROLE_KEYWORDS.items():
-            for pattern in patterns:
-                if pattern in raw_lower:
-                    return role
-        # If no known role matched but we got a clean title, return it directly
-        if len(raw) < 50:
-            return raw.title()
+        raw = (label_match.group(1) or '').strip()
+        if not raw:
+            pass
+        else:
+            # Match the extracted text against known roles
+            raw_lower = raw.lower()
+            for role, patterns in ROLE_KEYWORDS.items():
+                for pattern in patterns:
+                    if pattern in raw_lower:
+                        return role
+            # If no known role matched but we got a clean title, return it directly
+            if len(raw) < 50:
+                return raw.title()
 
     # Strategy 2: '[Title] at [Company]' pattern
     at_match = re.search(
@@ -223,6 +230,15 @@ def _extract_location(text: str) -> str | None:
 
 
 def _extract_company(text: str) -> str | None:
+    """
+    Extract company name from common patterns.
+
+    WHY STOP AT KNOWN SECTION HEADERS?
+    Pasted job text often has no newlines, so fields run together:
+    "Oasis Africa ConsultingFocus: Infrastructure..."
+    We must stop at known transition words like "Focus", "Job", "Salary".
+    """
+    # Pattern 1: 'About Company' label
     m = re.search(
         r'(?:about company|company name)[:\s]+([A-Za-z][A-Za-z\s&,.-]+?)(?:\n|is a|specialise)',
         text, re.IGNORECASE
@@ -231,10 +247,17 @@ def _extract_company(text: str) -> str | None:
         name = m.group(1).strip()
         if len(name) < 80:
             return name
-    # Also try '[Title] at [Company]' format
-    at_m = re.search(r'\bat\s+([A-Z][A-Za-z\s&]+(?:Ltd|Limited|Inc|Consulting|Group)?)', text)
+
+    # Pattern 2: '[Title] at [Company]' — stop at known delimiters
+    at_m = re.search(
+        r'\bat\s+([A-Z][A-Za-z\s&.-]+?)(?:\s*(?:Focus|Job|Salary|Location|Requirement|Key|$))',
+        text
+    )
     if at_m:
-        return at_m.group(1).strip()
+        name = at_m.group(1).strip().rstrip('.,')
+        if 3 < len(name) < 60:
+            return name
+
     return None
 
 

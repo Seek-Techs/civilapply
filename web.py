@@ -306,7 +306,15 @@ def upload_cv():
         if len(pdf_bytes) > 5 * 1024 * 1024:  # 5MB limit
             return jsonify({'status': 'error', 'message': 'File too large (max 5MB)'})
 
-        parsed_cv = parse_cv_from_bytes(pdf_bytes, f.filename)
+        try:
+            parsed_cv = parse_cv_from_bytes(pdf_bytes, f.filename)
+        except Exception as parse_err:
+            err_str = str(parse_err).lower()
+            if 'timed out' in err_str or 'timeout' in err_str:
+                return jsonify({'status': 'error', 'message': 'CV parsing timed out — please try again. This usually succeeds on the second attempt.'})
+            if 'nonetype' in err_str or 'attribute' in err_str:
+                return jsonify({'status': 'error', 'message': 'Could not read your CV. Make sure it is a text-based PDF, not a scanned image.'})
+            raise
 
         # Check if CV is civil engineering
         from civil_engineering.cv_reader import detect_cv_industry
