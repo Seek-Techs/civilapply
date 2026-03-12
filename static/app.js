@@ -160,24 +160,7 @@ async function uploadCV(input) {
       window._cvSessionId = data.session_id;
     }
 
-    var hdrBtn  = document.getElementById('header-upload-btn');
-    var hdrText = document.getElementById('header-upload-text');
-    if (hdrBtn && !hdrBtn.classList.contains('loaded')) hdrBtn.classList.add('loaded');
-    if (hdrText) hdrText.textContent = data.name ? ('✓ ' + data.name) : '✓ CV Uploaded';
-
-    var nameStrong = document.getElementById('candidate-name');
-    if (nameStrong && data.name) nameStrong.textContent = data.name;
-
-    var yearsEl = document.getElementById('candidate-years');
-    if (yearsEl && data.years !== undefined) yearsEl.textContent = data.years;
-
-    // Show candidate meta, hide new-user prompt
-    var prompt = document.getElementById('new-user-prompt');
-    var cMeta  = document.getElementById('candidate-meta');
-    var yMeta  = document.getElementById('years-meta');
-    if (prompt) prompt.style.display = 'none';
-    if (cMeta)  cMeta.style.display  = 'block';
-    if (yMeta)  yMeta.style.display  = 'block';
+    _updateCvChip(data.name, data.years);
     window._hasUploadedCV = true;
 
     if (zone && !zone.classList.contains('has-cv')) zone.classList.add('has-cv');
@@ -263,6 +246,12 @@ function toggleJobsFeed() {
   panel.style.display = _jobsFeedOpen ? 'block' : 'none';
   btn.textContent = _jobsFeedOpen ? '⚡ Hide Jobs Feed' : '⚡ Show Live Jobs';
   if (_jobsFeedOpen && document.getElementById('jobs-grid').children.length === 0) {
+    // Restore saved profession preference
+    try {
+      var saved = localStorage.getItem('ca_profession');
+      var profEl = document.getElementById('profession-filter');
+      if (saved && profEl) profEl.value = saved;
+    } catch(e) {}
     loadJobs();
   }
 }
@@ -274,17 +263,27 @@ async function loadJobs(forceRefresh) {
 
   status.textContent = forceRefresh ? 'Scraping live...' : 'Loading...';
   if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = 'Scraping...'; }
-  grid.innerHTML = '<div style="color:#888880;font-size:12px;padding:20px 0;">Scraping Jobberman &amp; MyJobMag with headless browser — takes ~60s on first load, instant from cache...</div>';
+  grid.innerHTML = '<div style="color:#888880;font-size:12px;padding:20px 0;">Loading jobs from selected sources — first load takes a moment, then cached for 30 min...</div>';
 
   var sources = [];
-  if (document.getElementById('src-jobberman').checked) sources.push('jobberman');
-  if (document.getElementById('src-myjobmag').checked)  sources.push('myjobmag');
+  if (document.getElementById('src-jobberman') && document.getElementById('src-jobberman').checked) sources.push('jobberman');
+  if (document.getElementById('src-myjobmag')  && document.getElementById('src-myjobmag').checked)  sources.push('myjobmag');
+  if (document.getElementById('src-ngcareers') && document.getElementById('src-ngcareers').checked) sources.push('ngcareers');
+  if (document.getElementById('src-hotng')     && document.getElementById('src-hotng').checked)     sources.push('hotng');
+  if (document.getElementById('src-linkedin')  && document.getElementById('src-linkedin').checked)  sources.push('linkedin');
+  if (sources.length === 0) sources = ['jobberman', 'myjobmag'];  // fallback
+
+  var profEl     = document.getElementById('profession-filter');
+  var profession = profEl ? profEl.value : 'all';
+
+  // Save profession preference to localStorage for persistence
+  try { localStorage.setItem('ca_profession', profession); } catch(e) {}
 
   try {
     var res = await fetch('/scrape-jobs', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({sources: sources, max_pages: 2, force_refresh: !!forceRefresh}),
+      body: JSON.stringify({sources: sources, max_pages: 2, force_refresh: !!forceRefresh, profession: profession}),
     });
     var data = await res.json();
 
@@ -303,8 +302,11 @@ async function loadJobs(forceRefresh) {
       return;
     }
 
-    var cacheNote = data.cached ? ' (cached)' : ' (live)';
-    status.textContent = data.count + ' jobs' + cacheNote;
+    var cacheNote  = data.cached ? ' (cached)' : ' (live)';
+    var profEl2    = document.getElementById('profession-filter');
+    var profLabel  = profEl2 ? profEl2.options[profEl2.selectedIndex].text : '';
+    var profNote   = (profLabel && profLabel !== 'All Roles') ? ' · ' + profLabel : '';
+    status.textContent = data.count + ' jobs' + profNote + cacheNote;
     renderJobs(data.jobs || []);
   } catch(e) {
     grid.innerHTML = '<div style="color:#f06050;font-size:12px;padding:20px 0;">Network error: ' + e.message + '</div>';
@@ -326,32 +328,61 @@ function renderJobs(jobs) {
     var j = jobs[i];
     var _srcColors = {Jobberman:'#c8f060', MyJobMag:'#60c8f0', LinkedIn:'#0a66c2', NGCareers:'#f0a030', HotNigerianJobs:'#f06080'};
     var sourceColor = _srcColors[j.source] || '#888880';
-    var salaryHtml  = j.salary ? '<div style="color:#f0a030;font-size:11px;margin-top:4px;">' + esc(j.salary) + '</div>' : '';
-    var companyHtml = j.company ? '<div style="font-size:11px;color:#888880;">' + esc(j.company) + '</div>' : '';
-    var snippetHtml = j.snippet ? '<div style="font-size:10px;color:#888880;margin-top:6px;line-height:1.5;">' + esc(j.snippet.slice(0, 120)) + '...</div>' : '';
 
-    var isApplied = window._appliedUrls && j.url && window._appliedUrls.has(j.url.trim());
+    var isApplied  = window._appliedUrls && j.url && window._appliedUrls.has(j.url.trim());
+    var cardBorder = isApplied ? '1px solid #1a4a28' : '1px solid #2a2b27';
+    var cardBg     = isApplied ? '#0a1a10' : '#0e0f0c';
+
+    // Company — show "View for details" when unknown, not a blank line
+    var companyHtml = j.company
+      ? '<div style="font-size:11px;color:#c8c8c0;margin-top:2px;font-weight:500;">' + esc(j.company) + '</div>'
+      : '<div style="font-size:10px;color:#555550;margin-top:2px;font-style:italic;">Company on listing page</div>';
+
+    // Snippet — show only if meaningful (longer than 20 chars)
+    var snippetHtml = (j.snippet && j.snippet.length > 20)
+      ? '<div style="font-size:10px;color:#888880;margin-top:6px;line-height:1.55;border-left:2px solid #2a2b27;padding-left:8px;">' + esc(j.snippet.slice(0, 140)) + (j.snippet.length > 140 ? '...' : '') + '</div>'
+      : '';
+
+    // Salary pill
+    var salaryHtml = j.salary
+      ? '<span style="font-size:9px;background:#1a1200;color:#f0a030;border:1px solid #3a2a00;padding:2px 7px;border-radius:2px;">' + esc(j.salary) + '</span>'
+      : '';
+
+    // Applied badge
     var appliedBadge = isApplied
       ? '<span style="font-size:9px;background:#0d2a1a;color:#4cde80;border:1px solid #1a5c30;padding:2px 7px;border-radius:2px;white-space:nowrap;">✓ Applied</span>'
       : '';
-    var cardBorder = isApplied ? '1px solid #1a4a28' : '1px solid #2a2b27';
-    var cardBg     = isApplied ? '#0a1a10' : '#0e0f0c';
-    html += '<div style="background:' + cardBg + ';border:' + cardBorder + ';border-radius:3px;padding:14px;">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">';
-    html += '<div style="font-size:12px;font-weight:500;color:#e8e8e2;line-height:1.4;">' + esc(j.title) + '</div>';
-    html += '<div style="display:flex;gap:4px;align-items:center;">';
+
+    html += '<div style="background:' + cardBg + ';border:' + cardBorder + ';border-radius:3px;padding:14px;display:flex;flex-direction:column;gap:0;">';
+
+    // Row 1: title + source badge
+    html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">';
+    html += '<div style="font-size:12px;font-weight:600;color:#e8e8e2;line-height:1.4;flex:1;">' + esc(j.title) + '</div>';
+    html += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">';
     html += appliedBadge;
-    html += '<span style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:' + sourceColor + ';white-space:nowrap;border:1px solid ' + sourceColor + ';padding:1px 6px;border-radius:2px;">' + esc(j.source) + '</span>';
-    html += '</div>';
-    html += '</div>';
-    html += companyHtml;
-    html += '<div style="font-size:10px;color:#888880;margin-top:2px;">' + esc(j.location) + ' &nbsp;·&nbsp; ' + esc(j.posted) + '</div>';
-    html += salaryHtml;
-    html += snippetHtml;
-    html += '<div style="display:flex;gap:8px;margin-top:10px;">';
-    html += '<button onclick="useJob(' + i + ', this)" style="background:#c8f060;color:#0e0f0c;border:none;padding:4px 12px;font-family:inherit;font-size:10px;cursor:pointer;border-radius:2px;min-width:90px;">Use This Job</button>';
-    html += '<a href="' + esc(j.url) + '" target="_blank" rel="noopener" style="background:transparent;border:1px solid #2a2b27;color:#888880;padding:4px 12px;font-size:10px;cursor:pointer;border-radius:2px;text-decoration:none;">View</a>';
+    html += '<span style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:' + sourceColor + ';white-space:nowrap;border:1px solid ' + sourceColor + ';padding:2px 7px;border-radius:2px;">' + esc(j.source) + '</span>';
     html += '</div></div>';
+
+    // Row 2: company
+    html += companyHtml;
+
+    // Row 3: location · date · salary
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap;">';
+    html += '<span style="font-size:10px;color:#666660;">📍 ' + esc(j.location) + '</span>';
+    html += '<span style="font-size:10px;color:#444440;">·</span>';
+    html += '<span style="font-size:10px;color:#555550;">' + esc(j.posted) + '</span>';
+    if (salaryHtml) html += salaryHtml;
+    html += '</div>';
+
+    // Row 4: snippet
+    html += snippetHtml;
+
+    // Row 5: actions
+    html += '<div style="display:flex;gap:8px;margin-top:10px;">';
+    html += '<button onclick="useJob(' + i + ', this)" style="background:#c8f060;color:#0e0f0c;border:none;padding:5px 14px;font-family:inherit;font-size:10px;font-weight:600;cursor:pointer;border-radius:2px;flex:1;max-width:140px;letter-spacing:0.5px;">Use This Job</button>';
+    html += '<a href="' + esc(j.url) + '" target="_blank" rel="noopener" style="background:transparent;border:1px solid #2a2b27;color:#888880;padding:5px 12px;font-size:10px;cursor:pointer;border-radius:2px;text-decoration:none;">View →</a>';
+    html += '</div>';
+    html += '</div>';
   }
   grid.innerHTML = html;
 
@@ -360,9 +391,25 @@ function renderJobs(jobs) {
 }
 
 // Store the current job's apply info for use after Generate
-window._currentApplyEmail  = null;
-window._currentApplyMethod = null;
-window._currentJobUrl      = null;
+window._currentApplyEmail   = null;
+window._currentApplyMethod  = null;
+window._currentJobUrl       = null;
+window._currentJobTitle     = null;
+window._currentJobCompany   = null;
+
+function _updateCvChip(name, years) {
+  var chip    = document.getElementById('cv-chip');
+  var chipName = document.getElementById('cv-chip-name');
+  var chipYrs  = document.getElementById('cv-chip-years');
+  var uploadBtn = document.getElementById('header-upload-btn');
+  var badge   = document.getElementById('provider-badge');
+
+  if (chip)     { chip.classList.add('active'); }
+  if (chipName) { chipName.textContent = name || 'CV Uploaded'; }
+  if (chipYrs)  { chipYrs.textContent  = years ? years + ' yrs' : ''; }
+  if (uploadBtn){ uploadBtn.style.display = 'none'; }
+  if (badge)    { badge.style.display = 'inline'; }
+}
 window._currentJobTitle    = null;
 
 async function useJob(idx, btnEl) {
@@ -372,10 +419,11 @@ async function useJob(idx, btnEl) {
   var jdInput = document.getElementById('jd-input');
 
   // Clear any previous apply state
-  window._currentApplyEmail  = null;
-  window._currentApplyMethod = null;
-  window._currentJobUrl      = j.url;
-  window._currentJobTitle    = j.title;
+  window._currentApplyEmail   = null;
+  window._currentApplyMethod  = null;
+  window._currentJobUrl       = j.url;
+  window._currentJobTitle     = j.title;
+  window._currentJobCompany   = j.company || '';
   _hideApplyBar();
 
   // Show loading state immediately
@@ -474,15 +522,30 @@ function showApplyBar(applyEmail, applyMethod, jobUrl, jobTitle, coverLetter, cv
                                   jobUrl && jobUrl.includes('myjobmag') ? 'MyJobMag' : 'Job Board') + ' →';
       var _jTitle = jobTitle, _jUrl = jobUrl;
       platformLink.onclick = function() {
-        addToTracker({
-          title:    _jTitle || 'Unknown role',
-          url:      _jUrl || '',
-          platform: _jUrl && _jUrl.includes('jobberman') ? 'Jobberman' :
-                    _jUrl && _jUrl.includes('myjobmag')  ? 'MyJobMag'  :
-                    _jUrl && _jUrl.includes('linkedin')  ? 'LinkedIn'  : 'Platform',
-          method:   'Platform (Easy Apply)',
-          status:   'Applied',
+        // Use sendBeacon — survives page navigation, unlike async fetch
+        var platform = _jUrl && _jUrl.includes('jobberman') ? 'Jobberman' :
+                       _jUrl && _jUrl.includes('myjobmag')  ? 'MyJobMag'  :
+                       _jUrl && _jUrl.includes('linkedin')  ? 'LinkedIn'  :
+                       _jUrl && _jUrl.includes('ngcareers') ? 'NGCareers' : 'Platform';
+        var payload = JSON.stringify({
+          title: _jTitle || 'Unknown role', url: _jUrl || '',
+          platform: platform, method: 'Platform', status: 'Applied',
+          company: window._currentJobCompany || '',
         });
+        if (navigator.sendBeacon) {
+          var blob = new Blob([payload], {type: 'application/json'});
+          navigator.sendBeacon('/tracker/add', blob);
+        } else {
+          // Fallback: XMLHttpRequest synchronous (deprecated but reliable)
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', '/tracker/add', false);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.send(payload);
+        }
+        // Update local state immediately
+        _trackerData.push({title: _jTitle, url: _jUrl, status: 'Applied', applied_at: new Date().toISOString()});
+        if (window._appliedUrls && _jUrl) window._appliedUrls.add(_jUrl.trim());
+        updateTrackerBadge();
       };
     }
   }
@@ -522,7 +585,10 @@ async function sendApplication() {
         salary:   '',
         url:      window._currentJobUrl || '',
         platform: window._currentJobUrl && window._currentJobUrl.includes('jobberman') ? 'Jobberman' :
-                  window._currentJobUrl && window._currentJobUrl.includes('myjobmag')  ? 'MyJobMag'  : '',
+                  window._currentJobUrl && window._currentJobUrl.includes('myjobmag')   ? 'MyJobMag'  :
+                  window._currentJobUrl && window._currentJobUrl.includes('linkedin')   ? 'LinkedIn'  :
+                  window._currentJobUrl && window._currentJobUrl.includes('ngcareers')  ? 'NGCareers' :
+                  window._currentJobUrl && window._currentJobUrl.includes('hotnigerian') ? 'HotNigerianJobs' : '',
         method:   'Email',
         status:   'Applied',
       });
@@ -733,16 +799,28 @@ async function deleteTrackerEntry(id) {
 
 async function addToTracker(jobData) {
   try {
-    await fetch('/tracker/add', {
+    var r = await fetch('/tracker/add', {
       method:  'POST',
       headers: {'Content-Type': 'application/json'},
       body:    JSON.stringify(jobData),
     });
-    // Refresh badge count
+    var result = await r.json();
+    if (result.status !== 'ok') {
+      console.error('Tracker add error:', result.message);
+      return;
+    }
+    // Refresh tracker list and update applied URL set
     var res  = await fetch('/tracker/list');
     var data = await res.json();
     _trackerData = Array.isArray(data) ? data : [];
+    window._appliedUrls = new Set(
+      _trackerData.map(a => (a.url || '').trim()).filter(Boolean)
+    );
     updateTrackerBadge();
+    // Re-render job cards to show applied badges
+    if (window._scrapedJobs && window._scrapedJobs.length) {
+      renderJobs(window._scrapedJobs);
+    }
   } catch(e) { console.error('Tracker add failed', e); }
 }
 
@@ -786,20 +864,7 @@ window.addEventListener('load', async () => {
     var sc = await fetch('/session-check');
     var sd = await sc.json();
     if (sd.has_cv && sd.name) {
-      var prompt = document.getElementById('new-user-prompt');
-      var cMeta  = document.getElementById('candidate-meta');
-      var yMeta  = document.getElementById('years-meta');
-      var nameEl = document.getElementById('candidate-name');
-      var yrEl   = document.getElementById('candidate-years');
-      var hdrBtn = document.getElementById('header-upload-btn');
-      var hdrTxt = document.getElementById('header-upload-text');
-      if (prompt) prompt.style.display = 'none';
-      if (cMeta)  cMeta.style.display  = 'block';
-      if (yMeta)  yMeta.style.display  = 'block';
-      if (nameEl) nameEl.textContent   = sd.name;
-      if (yrEl)   yrEl.textContent     = sd.years;
-      if (hdrBtn) hdrBtn.classList.add('loaded');
-      if (hdrTxt) hdrTxt.textContent   = '✓ ' + sd.name;
+      _updateCvChip(sd.name, sd.years);
       window._hasUploadedCV = true;
     }
   } catch(e) {}
@@ -899,11 +964,13 @@ function renderBatchResults(data) {
 
   listEl.style.display = 'block';
 
-  var emailCount = _batchResults.filter(j => j.can_email).length;
+  var emailCount    = _batchResults.filter(j => j.can_email).length;
+  var platformCount = _batchResults.length - emailCount;
   summary.innerHTML =
-    '<b style="color:var(--accent)">' + _batchResults.length + '</b> matches found · ' +
-    '<b style="color:var(--accent)">' + emailCount + '</b> can be emailed directly · ' +
-    '<span style="color:var(--muted)">' + data.skipped + ' jobs below threshold or filtered out</span>';
+    '<b style="color:var(--accent)">' + _batchResults.length + '</b> matches · ' +
+    (emailCount ? '<span style="color:#4cde80">✉ ' + emailCount + ' email</span> · ' : '') +
+    (platformCount ? '<span style="color:#a080f0">🔗 ' + platformCount + ' platform</span> · ' : '') +
+    '<span style="color:var(--muted)">' + data.skipped + ' below threshold</span>';
 
   cards.innerHTML = '';
 
@@ -928,7 +995,7 @@ function renderBatchResults(data) {
       : '';
 
     card.innerHTML =
-      (job.can_email ? '<input type="checkbox" class="batch-checkbox" data-idx="' + i + '" style="accent-color:var(--accent);flex-shrink:0;width:16px;height:16px" onchange="updateBatchCard(this)">' : '<div style="width:16px;flex-shrink:0"></div>') +
+      '<input type="checkbox" class="batch-checkbox" data-idx="' + i + '" style="accent-color:var(--accent);flex-shrink:0;width:16px;height:16px;cursor:pointer" onchange="updateBatchCard(this)">' +
       '<div style="flex:1;min-width:0">' +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span style="font-weight:600;font-size:12px;color:var(--text)">' + esc(job.title) + '</span>' +
@@ -977,15 +1044,25 @@ async function sendBatchSelected() {
     return;
   }
 
-  var emailJobs = selected.filter(j => j.can_email);
+  var emailJobs    = selected.filter(j => j.can_email);
+  var platformJobs = selected.filter(j => !j.can_email && j.url);
+
+  // Build confirmation message
+  var confirmLines = [];
+  if (emailJobs.length)
+    confirmLines.push('📧 ' + emailJobs.length + ' email application(s) will be sent');
+  if (platformJobs.length)
+    confirmLines.push('🔗 ' + platformJobs.length + ' platform job(s) will open in new tabs');
+
+  if (!confirm(confirmLines.join('\n') + '\n\nProceed?')) return;
+
+  // Open platform jobs in tabs immediately
+  platformJobs.forEach(j => window.open(j.url, '_blank'));
+
   if (!emailJobs.length) {
-    alert('None of the selected jobs have an email address. These require applying on the job board directly.');
+    showToast(platformJobs.length + ' job listing(s) opened. Apply directly on each site.');
     return;
   }
-
-  if (!confirm('Send your tailored CV to ' + emailJobs.length + ' employer(s)?\n\n' +
-               emailJobs.map(j => '• ' + j.title + (j.company ? ' — ' + j.company : '') + '\n  → ' + j.apply_email).join('\n') +
-               '\n\nThis cannot be undone.')) return;
 
   var btn = document.getElementById('batch-send-btn');
   btn.disabled    = true;
@@ -1312,8 +1389,7 @@ async function welcomeUpload(input) {
       status.style.color = 'var(--accent)';
 
       // Update main header with real name/years
-      if (data.name)  document.getElementById('candidate-name').textContent  = data.name;
-      if (data.years) document.getElementById('candidate-years').textContent = data.years;
+      if (data.name) _updateCvChip(data.name, data.years);
 
       // Update main upload zone to confirmed state
       var uploadZone = document.getElementById('upload-zone');
@@ -1402,12 +1478,14 @@ function updateAuthNav(user) {
   var display = document.getElementById('auth-user-display');
   var btn     = document.getElementById('auth-nav-btn');
   if (user) {
-    display.textContent = user.name || user.email;
-    display.style.display = 'block';
-    btn.textContent = '👤 Account';
+    // Show truncated email next to Account button
+    var label = user.email || user.name || '';
+    display.textContent = label;
+    display.style.display = label ? 'inline' : 'none';
+    btn.textContent = 'Account';
   } else {
     display.style.display = 'none';
-    btn.textContent = '👤 Sign In';
+    btn.textContent = 'Sign In';
   }
 }
 

@@ -391,18 +391,20 @@ def process():
 
 @app.route('/scrape-jobs', methods=['POST'])
 def scrape_jobs():
-    """Fetch live civil engineering jobs from Jobberman and MyJobMag."""
+    """Fetch live construction industry jobs, optionally filtered by profession."""
     if not _check_rate(request.remote_addr):
         return jsonify({'status': 'error', 'message': 'Too many requests. Please wait.'})
     try:
-        from civil_engineering.scraper.job_scraper import fetch_jobs
+        from civil_engineering.scraper.job_scraper import fetch_jobs, filter_by_profession
         data          = request.get_json() or {}
-        sources       = data.get('sources', ['jobberman', 'myjobmag'])
-        max_pages     = min(int(data.get('max_pages', 2)), 3)   # cap at 3
+        sources       = data.get('sources', ['jobberman', 'myjobmag', 'ngcareers', 'hotng', 'linkedin'])
+        max_pages     = min(int(data.get('max_pages', 2)), 3)
         force_refresh = bool(data.get('force_refresh', False))
+        profession    = data.get('profession', 'all').strip().lower()
         jobs = fetch_jobs(sources=sources, max_pages=max_pages, force_refresh=force_refresh)
+        jobs = filter_by_profession(jobs, profession)
         return jsonify({'status': 'ok', 'jobs': jobs, 'count': len(jobs),
-                        'cached': not force_refresh})
+                        'cached': not force_refresh, 'profession': profession})
     except RuntimeError as e:
         # Clear user-facing errors (e.g. Playwright not installed)
         return jsonify({'status': 'error', 'message': str(e), 'install_needed': True})
@@ -724,55 +726,65 @@ def batch_preview():
     skipped   = 0
 
     for job in jobs:
-        # Use title + snippet + salary for scoring — richer than title alone
-        snippet = ' '.join(filter(None, [
-            job.get('title', ''),
-            job.get('company', ''),
-            job.get('location', ''),
-            job.get('snippet', ''),
-            job.get('salary', ''),
-        ]))
         try:
-            pipeline = run_pipeline(snippet, cv_override=active_cv)
-        except Exception:
+            # ── Lightweight scoring only — no AI rewrite, no cover letter ──
+            # Full run_pipeline makes 4-5 AI calls per job. With 30+ jobs that
+            # causes timeouts. We only need: parse → relevance check → confidence.
+            from civil_engineering.job_parser                          import parse_job_description
+            from civil_engineering.intelligence.builder                import build_intelligence
+            from civil_engineering.decision_explainer.decision_explainer import explain_decisions
+            from civil_engineering.eligibility.job_filter              import is_job_relevant
+            from civil_engineering.scoring.job_ranker                  import rank_job
+
+            snippet_text = ' '.join(filter(None, [
+                job.get('title', ''),
+                job.get('snippet', ''),
+                job.get('location', ''),
+                job.get('salary', ''),
+            ]))
+
+            parsed = parse_job_description(snippet_text)
+            job_dict = parsed.to_dict()
+
+            relevant, reason = is_job_relevant(active_cv, job_dict, raw_text=snippet_text)
+            if not relevant:
+                skipped += 1
+                continue
+
+            intelligence = build_intelligence(active_cv, job_dict)
+            decisions    = explain_decisions(active_cv, job_dict, intelligence)
+            conf_block   = next((d for d in decisions if d.get('type') == 'confidence_score'), {})
+            confidence   = conf_block.get('overall_confidence', 0)
+
+        except Exception as e:
+            app.logger.debug(f'Batch score error: {e}')
             skipped += 1
             continue
 
-        if pipeline.get('status') == 'rejected':
-            skipped += 1
-            continue
-
-        confidence = pipeline.get('match', {}).get('confidence', 0)
         if confidence < min_confidence:
             skipped += 1
             continue
 
-        # Prefer raw scraper data for title/company/location —
-        # pipeline parses from snippet which may be thin
-        title    = job.get('title') or pipeline['job'].get('title') or 'Unknown'
-        company  = job.get('company') or pipeline['job'].get('company') or ''
-        location = job.get('location') or pipeline['job'].get('location') or ''
-        salary   = job.get('salary') or pipeline['job'].get('salary') or ''
-
-        apply_email = job.get('email') or pipeline.get('job', {}).get('email') or ''
-
+        apply_email = job.get('email', '')
         if email_only and not apply_email:
             skipped += 1
             continue
 
+        ranking = rank_job(confidence)
         results.append({
-            'title':        title,
-            'company':      company,
-            'location':     location,
-            'salary':       salary,
+            'title':        job.get('title', 'Unknown'),
+            'company':      job.get('company', ''),
+            'location':     job.get('location', ''),
+            'salary':       job.get('salary', ''),
             'source':       job.get('source', ''),
             'url':          job.get('url', ''),
             'apply_email':  apply_email,
             'confidence':   confidence,
-            'rank':         pipeline['match'].get('rank', ''),
-            'cv_summary':   pipeline.get('cv_summary', ''),
-            'cover_letter': pipeline.get('cover_letter', ''),
+            'rank':         ranking.get('rank', ''),
             'can_email':    bool(apply_email),
+            # cover_letter left empty — generated on demand when user clicks Send
+            'cover_letter': '',
+            'cv_summary':   '',
         })
 
     results.sort(key=lambda x: x['confidence'], reverse=True)
@@ -952,10 +964,17 @@ def _tracker_db():
             conn.commit()
     except Exception:
         pass
-    # Migrate: add new columns if upgrading old DB
+    # Migrate: add new columns to users if upgrading old DB
     for _col, _def in [('password_hash', 'TEXT DEFAULT ""'), ('cv_data', 'TEXT DEFAULT ""')]:
         try:
             conn.execute(f'ALTER TABLE users ADD COLUMN {_col} {_def}')
+            conn.commit()
+        except Exception:
+            pass
+    # Migrate: add user_id to applications if missing (old DB without it)
+    for _col, _def in [('user_id', 'TEXT DEFAULT ""'), ('notes', 'TEXT DEFAULT ""')]:
+        try:
+            conn.execute(f'ALTER TABLE applications ADD COLUMN {_col} {_def}')
             conn.commit()
         except Exception:
             pass
@@ -1019,11 +1038,18 @@ def tracker_list():
     try:
         conn = _tracker_db()
         uid  = session.get('user_id')
+        sid  = session.get('cv_id', '')
         if uid:
-            rows = conn.execute('SELECT * FROM applications WHERE user_id=? ORDER BY applied_at DESC', (uid,)).fetchall()
+            # Pull records stored under user_id OR old cv_id (records saved before login)
+            rows = conn.execute(
+                'SELECT * FROM applications WHERE user_id=? OR (user_id=? AND user_id != ?) ORDER BY applied_at DESC',
+                (uid, sid, uid)
+            ).fetchall()
         else:
-            sid  = session.get('cv_id', '')
-            rows = conn.execute('SELECT * FROM applications WHERE user_id=? OR user_id=\'\' ORDER BY applied_at DESC', (sid,)).fetchall()
+            rows = conn.execute(
+                'SELECT * FROM applications WHERE user_id=? OR user_id=\'anonymous\' ORDER BY applied_at DESC',
+                (sid,)
+            ).fetchall()
         conn.close()
         return jsonify([dict(r) for r in rows])
     except Exception as e:
@@ -1060,9 +1086,12 @@ def tracker_delete():
         return jsonify({'status': 'error', 'message': 'ID required'})
     try:
         conn = _tracker_db()
-        uid = session.get('cv_id', session.get('user_id', ''))
-        conn.execute('DELETE FROM applications WHERE id = ? AND (user_id=? OR user_id=\'\' OR user_id=\'anonymous\')',
-                     (app_id, uid))
+        uid = session.get('user_id') or session.get('cv_id', '')
+        # Delete if owned by this user_id, cv_id, anonymous, or no owner at all
+        conn.execute(
+            'DELETE FROM applications WHERE id = ? AND (user_id=? OR user_id=? OR user_id=\'\' OR user_id=\'anonymous\')',
+            (app_id, uid, session.get('cv_id', ''))
+        )
         conn.commit()
         conn.close()
         return jsonify({'status': 'ok'})
@@ -1452,26 +1481,58 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   .meta {
     display: flex;
-    gap: 24px;
+    gap: 12px;
     align-items: center;
   }
   .meta-item {
     color: var(--muted);
-    font-size: 11px;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+  }
+  .meta-item strong { color: var(--text); font-weight: 500; }
+  /* CV status chip — shows name + years inline, compact */
+  .cv-chip {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    background: #0f1a0a;
+    border: 1px solid var(--accent);
+    border-radius: 2px;
+    padding: 4px 10px;
+    font-size: 10px;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cv-chip.active { display: flex; }
+  /* Provider badge — subtle, not loud */
+  .provider-badge {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 3px 8px;
+    border-radius: 2px;
+    font-size: 9px;
     letter-spacing: 0.5px;
     text-transform: uppercase;
+    white-space: nowrap;
   }
-  .meta-item strong { color: var(--text); }
-  .provider-badge {
-    background: #1a2010;
-    border: 1px solid var(--accent);
-    color: var(--accent);
-    padding: 3px 10px;
-    border-radius: 2px;
+  /* User info pill */
+  .user-pill {
+    display: none;
+    align-items: center;
+    gap: 6px;
     font-size: 10px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+    color: var(--muted);
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  .user-pill.active { display: flex; }
 
   /* ── Header CV upload button ── */
   .header-upload {
@@ -1971,42 +2032,50 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 
 <header>
-  <div class="logo">Civil<span>Apply</span></div>
+  <a href="/" class="logo" style="text-decoration:none;">Civil<span>Apply</span></a>
+
   <div class="meta">
+    <!-- Hidden file input -->
     <input type="file" id="cv-file-input-hdr" accept=".pdf" style="display:none" onchange="uploadCV(this)">
+
+    <!-- CV chip: shows after upload (replaces the upload button + candidate meta + years) -->
+    <div id="cv-chip" class="cv-chip" onclick="document.getElementById('cv-file-input-hdr').click()" title="Click to replace CV">
+      <span style="font-size:11px;">📄</span>
+      <span id="cv-chip-name">{{ name }}</span>
+      <span id="cv-chip-years" style="color:var(--muted);font-size:9px;"></span>
+    </div>
+
+    <!-- Upload prompt: shows before upload -->
     <label for="cv-file-input-hdr" class="header-upload" id="header-upload-btn" title="Upload your CV PDF">
       <span>📄</span>
       <span id="header-upload-text">Upload CV</span>
     </label>
-    <div class="meta-item" id="candidate-meta" style="display:none">Candidate: <strong id="candidate-name">{{ name }}</strong></div>
-    <div class="meta-item" id="years-meta" style="display:none">Experience: <strong id="candidate-years">{{ years }}</strong> yrs</div>
-    <div id="new-user-prompt"
-      style="font-size:10px;color:var(--accent);letter-spacing:0.5px;
-             background:#0f1a0a;border:1px solid var(--accent);border-radius:3px;
-             padding:4px 10px;animation:pulse-border 2s ease-in-out infinite;cursor:pointer"
-      onclick="document.getElementById('cv-file-input-hdr').click()"
-      title="Click to upload your CV">
-      ⬆ Upload your CV first
-    </div>
-    <div class="provider-badge">{{ provider }}</div>
+
+    <!-- Provider badge: subtle, only when CV active -->
+    <div class="provider-badge" id="provider-badge" style="display:none;">{{ provider }}</div>
+
+    <!-- Tracker button -->
     <button onclick="showTracker()" id="tracker-nav-btn"
-      style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 14px;
+      style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;
              font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;
              cursor:pointer;border-radius:2px;transition:all 0.15s;white-space:nowrap;"
       onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
       onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
-      📋 My Applications <span id="tracker-count-badge" style="display:none;background:var(--accent);color:#0e0f0c;border-radius:10px;padding:1px 6px;font-size:9px;margin-left:4px"></span>
+      Applications
+      <span id="tracker-count-badge" style="display:none;background:var(--accent);color:#0e0f0c;border-radius:10px;padding:1px 6px;font-size:9px;margin-left:4px;font-weight:600;"></span>
     </button>
-    <!-- Auth button -->
-    <div id="auth-nav" style="display:flex;align-items:center;gap:8px">
-      <span id="auth-user-display" style="display:none;font-size:10px;color:var(--muted);letter-spacing:0.5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+
+    <!-- Auth: email + account/logout -->
+    <div id="auth-nav" style="display:flex;align-items:center;gap:8px;">
+      <span id="auth-user-display" style="display:none;font-size:10px;color:var(--muted);
+            max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
       <button id="auth-nav-btn" onclick="showAuth()"
         style="background:transparent;border:1px solid var(--border);color:var(--muted);
                padding:5px 12px;font-family:var(--mono);font-size:10px;cursor:pointer;
-               border-radius:2px;letter-spacing:0.5px;transition:all 0.15s;white-space:nowrap"
+               border-radius:2px;letter-spacing:0.5px;transition:all 0.15s;white-space:nowrap;"
         onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
         onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
-        👤 Sign In
+        Sign In
       </button>
     </div>
   </div>
@@ -2233,18 +2302,48 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <!-- ── Jobs Feed Panel ── -->
 <div id="jobs-panel" style="display:none; border-top:1px solid var(--border); background:var(--surface);">
-  <div style="padding:20px 40px 10px; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+  <div style="padding:16px 40px 10px; display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;">
     <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);">
       ⚡ Live Job Feed
     </div>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-      <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:6px;">
-        <input type="checkbox" id="src-jobberman" checked> Jobberman
-      </label>
-      <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:6px;">
-        <input type="checkbox" id="src-myjobmag" checked> MyJobMag
-      </label>
-      <button id="refresh-jobs-btn" onclick="loadJobs(true)" style="background:var(--accent);color:#0e0f0c;border:none;padding:6px 16px;font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-radius:2px;">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+
+      <!-- Profession filter -->
+      <select id="profession-filter" onchange="loadJobs(false)"
+        style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:4px 10px;font-family:var(--mono);font-size:10px;border-radius:2px;cursor:pointer;outline:none;">
+        <option value="all">All Roles</option>
+        <option value="civil_engineer">Civil / Structural Engineer</option>
+        <option value="quantity_surveyor">Quantity Surveyor</option>
+        <option value="architect">Architect</option>
+        <option value="project_manager">Project Manager</option>
+        <option value="hse_officer">HSE Officer</option>
+        <option value="mep_engineer">M&amp;E / MEP Engineer</option>
+        <option value="land_surveyor">Land Surveyor</option>
+        <option value="site_supervisor">Site Supervisor / Foreman</option>
+        <option value="contracts_manager">Contracts / Procurement</option>
+      </select>
+
+      <!-- Source checkboxes -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="src-jobberman" checked onchange="loadJobs(false)" style="accent-color:#c8f060;"> <span style="color:#c8f060;">Jobberman</span>
+        </label>
+        <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="src-myjobmag" checked onchange="loadJobs(false)" style="accent-color:#60c8f0;"> <span style="color:#60c8f0;">MyJobMag</span>
+        </label>
+        <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="src-ngcareers" checked onchange="loadJobs(false)" style="accent-color:#f0a030;"> <span style="color:#f0a030;">NGCareers</span>
+        </label>
+        <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="src-hotng" checked onchange="loadJobs(false)" style="accent-color:#f06080;"> <span style="color:#f06080;">HotNG</span>
+        </label>
+        <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="src-linkedin" checked onchange="loadJobs(false)" style="accent-color:#0a66c2;"> <span style="color:#5b9bd5;">LinkedIn</span>
+        </label>
+      </div>
+
+      <button id="refresh-jobs-btn" onclick="loadJobs(true)"
+        style="background:var(--accent);color:#0e0f0c;border:none;padding:6px 16px;font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-radius:2px;">
         Refresh Jobs
       </button>
       <span id="jobs-status" style="font-size:10px;color:var(--muted);"></span>
@@ -2321,7 +2420,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <span id="batch-summary-text" style="font-size:11px;color:var(--text)"></span>
         <div style="display:flex;gap:8px;align-items:center">
           <label style="font-size:10px;color:var(--muted)">
-            <input type="checkbox" id="batch-select-all" onchange="batchSelectAll(this.checked)" style="accent-color:var(--accent)"> Select all email-apply
+            <input type="checkbox" id="batch-select-all" onchange="batchSelectAll(this.checked)" style="accent-color:var(--accent)"> Select all
           </label>
           <button onclick="sendBatchSelected()" id="batch-send-btn"
             style="background:var(--accent);color:#0e0f0c;border:none;padding:7px 18px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;border-radius:2px;letter-spacing:0.5px">
