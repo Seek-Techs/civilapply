@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        body { background: #f4f7f6; font-family: 'Segoe UI', sans-serif; }
+        .stat-card { border: none; border-radius: 12px; transition: transform 0.2s; }
+        .stat-card:hover { transform: translateY(-5px); }
+        .table-container { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .scroll-box { max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="container py-5">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Analytics Overview</h1>
+            <span id="status-badge" class="badge bg-secondary">Fetching Data...</span>
+        </div>
+
+        <div class="row g-4 mb-5" id="summary-row"></div>
+
+        <div class="row g-4">
+            <div class="col-lg-8">
+                <div class="table-container">
+                    <h5 class="mb-3">Daily Activity (Last 14 Days)</h5>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr><th>Date</th><th>Unique Sessions</th><th>Logged-in Users</th></tr>
+                            </thead>
+                            <tbody id="daily-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-4">
+                <div class="table-container">
+                    <h5 class="mb-3">Top Events (7d)</h5>
+                    <div id="event-list" class="list-group list-group-flush"></div>
+                </div>
+            </div>
+
+            <div class="col-12">
+                <div class="table-container">
+                    <h5 class="mb-3">Recent Feedback</h5>
+                    <div class="scroll-box">
+                        <table class="table align-middle">
+                            <tbody id="feedback-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const key = params.get('key');
+
+        if (!key) {
+            document.body.innerHTML = '<div class="container mt-5 text-center"><h1>Access Denied</h1><p>Missing admin key.</p></div>';
+        } else {
+            fetch(`/admin/stats?key=${key}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'error') throw new Error(data.message);
+                    
+                    document.getElementById('status-badge').className = "badge bg-success";
+                    document.getElementById('status-badge').innerText = "Live Data";
+
+                    // Populate Summary
+                    const summary = [
+                        { t: 'Total Users', v: data.total_users, c: 'text-primary' },
+                        { t: 'Applications', v: data.total_applications, c: 'text-success' },
+                        { t: 'Feedback', v: data.total_feedback, c: 'text-warning' },
+                        { t: 'Positive (%)', v: data.total_feedback ? Math.round((data.thumbs_up/data.total_feedback)*100)+'%' : '0%', c: 'text-info' }
+                    ];
+                    document.getElementById('summary-row').innerHTML = summary.map(s => `
+                        <div class="col-md-3">
+                            <div class="card stat-card shadow-sm p-3">
+                                <small class="text-muted fw-bold">${s.t.toUpperCase()}</small>
+                                <h2 class="${s.c} mb-0">${s.v}</h2>
+                            </div>
+                        </div>
+                    `).join('');
+
+                    // Populate Daily Activity
+                    document.getElementById('daily-body').innerHTML = data.daily_activity.map(d => `
+                        <tr>
+                            <td>${d.day}</td>
+                            <td><span class="badge rounded-pill bg-light text-dark">${d.sessions}</span></td>
+                            <td><span class="badge rounded-pill bg-light text-dark">${d.users}</span></td>
+                        </tr>
+                    `).join('');
+
+                    // Populate Events
+                    document.getElementById('event-list').innerHTML = data.events_7d.map(e => `
+                        <div class="list-group-item d-flex justify-content-between align-items-center">
+                            ${e.event} <span class="badge bg-primary rounded-pill">${e.cnt}</span>
+                        </div>
+                    `).join('');
+
+                    // Populate Feedback
+                    document.getElementById('feedback-body').innerHTML = data.recent_feedback.map(f => `
+                        <tr>
+                            <td style="width: 50px">${f.rating ? '👍' : '👎'}</td>
+                            <td>
+                                <strong>${f.context || 'General'}</strong><br>
+                                <small class="text-muted">${f.message || 'No comment'}</small>
+                            </td>
+                            <td class="text-end text-muted small">${new Date(f.created_at).toLocaleDateString()}</td>
+                        </tr>
+                    `).join('');
+                })
+                .catch(err => {
+                    document.getElementById('status-badge').className = "badge bg-danger";
+                    document.getElementById('status-badge').innerText = "Error: " + err.message;
+                });
+        }
+    </script>
+</body>
+</html>
