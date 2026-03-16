@@ -31,7 +31,7 @@ def _load_env():
 
 _load_env()
 
-from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, send_from_directory, render_template
 
 from civil_engineering.job_parser                        import parse_job_description
 from civil_engineering.normalization.normalize_cv        import normalize_cv
@@ -238,6 +238,11 @@ def run_pipeline(raw_text: str, cv_override: dict | None = None) -> dict:
 # A server-side /compose route is 100% reliable: the link is always a real
 # Flask URL (set at page load as href), clicking it is a normal link click,
 # Flask builds the Yahoo URL and returns a redirect. No JS needed at all.────
+
+@app.route('/admin/dashboard')
+def admin_view():
+    # This just returns the HTML file
+    return render_template('admin.html')
 
 @app.route('/')
 def landing():
@@ -1039,75 +1044,52 @@ def _tracker_db():
         return conn
 
 def _setup_postgres(conn):
-    """Run Postgres-specific table creation."""
+    """Create all necessary tables and handle migrations."""
     cur = conn.cursor()
-    # Note: 'SERIAL' is the Postgres version of 'AUTOINCREMENT'
-    try:
-        cur.execute('''CREATE TABLE IF NOT EXISTS applications (
-            id          SERIAL PRIMARY KEY,
-            user_id     TEXT DEFAULT '',
-            title       TEXT NOT NULL,
-            company     TEXT,
-            location    TEXT,
-            salary      TEXT,
-            url         TEXT,
-            platform    TEXT,
-            method      TEXT,
-            status      TEXT DEFAULT 'Applied',
-            notes       TEXT DEFAULT '',
-            applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        cur.execute('''CREATE TABLE IF NOT EXISTS users (
-            id            TEXT PRIMARY KEY,
-            email         TEXT UNIQUE NOT NULL,
-            name          TEXT DEFAULT '',
-            password_hash TEXT DEFAULT '',
-            cv_data       TEXT DEFAULT '',
-            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_seen     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        # Add feedback and events for Postgres too
-        cur.execute('''CREATE TABLE IF NOT EXISTS feedback (
-            id SERIAL PRIMARY KEY, 
-            user_id TEXT, rating INTEGER, message TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        conn.commit()
-    finally:
-        cur.close()
+    
+    # 1. Create Tables (Standard Definitions)
+    cur.execute('''CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT, 
+        password_hash TEXT, cv_data TEXT, 
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
-@app.route('/tracker/add', methods=['POST'])
-def tracker_add():
-    """Log a job application to the tracker."""
-    data    = request.get_json() or {}
-    title   = data.get('title', '').strip()
-    if not title:
-        return jsonify({'status': 'error', 'message': 'Job title required'})
-    try:
-        conn = _tracker_db()
-        cur = conn.cursor() # Create the worker (cursor)
+    cur.execute('''CREATE TABLE IF NOT EXISTS applications (
+        id SERIAL PRIMARY KEY, user_id TEXT, company TEXT, role TEXT, 
+        status TEXT, link TEXT, notes TEXT, 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
-        placeholder = '%s' if USE_POSTGRES else '?'
+    cur.execute('''CREATE TABLE IF NOT EXISTS feedback (
+        id SERIAL PRIMARY KEY, user_id TEXT, session_id TEXT, 
+        rating INTEGER, message TEXT, context TEXT, 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
-        # Check if the user is logged in and use user_id, otherwise fall back to cv_id or 'anonymous'
-        uid = session.get('user_id') or session.get('cv_id') or 'anonymous'
-        query = f'''INSERT INTO applications 
-               (title, company, location, salary, url, platform, method, status, notes, user_id) 
-               VALUES ({", ".join([placeholder]*10)})'''
-        cur.execute(query, (
-        title, data.get('company', ''), data.get('location', ''), 
-        data.get('salary', ''), data.get('url', ''), data.get('platform', ''), 
-        data.get('method', ''), data.get('status', 'Applied'), data.get('notes', ''), 
-        uid
-    ))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'status': 'ok'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+    cur.execute('''CREATE TABLE IF NOT EXISTS events (
+        id SERIAL PRIMARY KEY, user_id TEXT, session_id TEXT, 
+        event TEXT, meta TEXT, ip TEXT, ua TEXT, 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    conn.commit()
+    print("PostgreSQL Tables Verified/Created.")
+
+    # 2. Migrations (Adding columns to tables that already existed)
+    # We do these one by one in case the table exists but the column doesn't
+    migrations = [
+        ("feedback", "context", "TEXT"),
+        ("events", "ip", "TEXT"),
+        ("events", "ua", "TEXT")
+    ]
+
+    for table, column, col_type in migrations:
+        try:
+            cur.execute(f'ALTER TABLE {table} ADD COLUMN {column} {col_type}')
+            conn.commit()
+            print(f"Migration Success: Added {column} to {table}")
+        except Exception:
+            conn.rollback() # Column likely already exists, ignore error
+
+    # 3. Final Close (Only once at the end!)
+    cur.close()
 
 
 @app.route('/tracker/list', methods=['GET'])
