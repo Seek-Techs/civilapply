@@ -58,6 +58,26 @@ def _get(url, timeout=(6, 10)):
 
 def _clean(t): return ' '.join((t or '').split()).strip()
 
+def _snippet(raw_text, title='', max_len=200):
+    """
+    Extract a meaningful snippet from card text.
+    Strips the job title (which Jobberman HTML repeats at the start),
+    button labels, and other noise. Returns first meaningful sentence.
+    """
+    t = _clean(raw_text)
+    # Remove the title if it appears at the start
+    if title and t.lower().startswith(title.lower()):
+        t = t[len(title):].strip(' ·,-')
+    # Remove common button labels and UI noise
+    for noise in ['Use This Job', 'View', 'Apply Now', 'Apply', 'Save', 'Share',
+                  'Easy Apply', 'Quick Apply', 'Full Time', 'Part Time',
+                  'Contract', 'Permanent', 'Temporary']:
+        t = re.sub(re.escape(noise), '', t, flags=re.I).strip()
+    # Remove salary artifacts already shown separately
+    t = re.sub(r'[₦N#][0-9,]+[\s\S]{0,30}?(monthly|net|per month)?', '', t, flags=re.I)
+    t = _clean(t)
+    return t[:max_len] if t else ''
+
 def _company(card_el, fallback=''):
     """Extract company name from a job card element."""
     # Try common company containers
@@ -93,8 +113,61 @@ def _salary(text):
     return m.group(0).strip() if m else ''
 
 def _location(text):
-    m = re.search(r'\b(Lagos|Abuja|Port Harcourt|Ibadan|Kano|Ogun|Rivers|Delta|Enugu|Kaduna)\b', text or '', re.I)
+    # Extended Nigerian city/state list for better location extraction
+    CITIES = (
+        'Lagos', 'Abuja', 'Port Harcourt', 'Ibadan', 'Kano', 'Ogun', 'Rivers',
+        'Delta', 'Enugu', 'Kaduna', 'Lekki', 'Victoria Island', 'Ikeja',
+        'Warri', 'Benin City', 'Calabar', 'Uyo', 'Asaba', 'Owerri', 'Jos',
+        'Ilorin', 'Abeokuta', 'Sokoto', 'Maiduguri', 'Zaria', 'Aba',
+        'Onitsha', 'Akure', 'Bauchi', 'Yola', 'Lokoja', 'Makurdi', 'Awka',
+        'Ondo', 'Ekiti', 'Anambra', 'Osun', 'Kwara', 'Niger State', 'Nasarawa',
+    )
+    pattern = r'\b(' + '|'.join(re.escape(c) for c in CITIES) + r')\b'
+    m = re.search(pattern, text or '', re.I)
     return (m.group(0) + ', Nigeria') if m else 'Nigeria'
+
+# ── Profession keyword map ────────────────────────────────────────────────────
+# Each profession maps to title keywords used to filter job cards.
+# Keys are sent from the frontend as ?profession=civil_engineer etc.
+# 'all' means no filter — show everything that passes _is_construction().
+PROFESSION_KEYWORDS = {
+    'all':                  [],   # no secondary filter
+    'civil_engineer':       ['civil engineer', 'civil eng', 'structural engineer', 'structural eng',
+                             'geotechnical', 'site engineer', 'road', 'bridge', 'drainage', 'foundation',
+                             'infrastructure engineer'],
+    'quantity_surveyor':    ['quantity surveyor', 'qs ', ' qs', 'cost engineer', 'cost planner',
+                             'estimator', 'cost manager', 'pqs', 'commercial manager'],
+    'architect':            ['architect', 'architectural', 'design architect', 'project architect',
+                             'senior architect', 'principal architect'],
+    'project_manager':      ['project manager', 'project management', 'construction manager',
+                             'programme manager', 'project director', 'project coordinator',
+                             'planning engineer', 'planning manager'],
+    'hse_officer':          ['hse', 'health and safety', 'safety officer', 'safety manager',
+                             'safety engineer', 'environment officer', 'sheq'],
+    'mep_engineer':         ['mechanical engineer', 'm&e', 'mep', 'electrical engineer',
+                             'building services', 'hvac', 'plumbing engineer'],
+    'land_surveyor':        ['land surveyor', 'survey', 'gis', 'geomatics', 'topographic',
+                             'cadastral surveyor'],
+    'site_supervisor':      ['site supervisor', 'site agent', 'foreman', 'clerk of works',
+                             'site foreman', 'works supervisor'],
+    'contracts_manager':    ['contracts manager', 'contract manager', 'procurement', 'commercial',
+                             'tendering', 'contract administrator'],
+}
+
+def filter_by_profession(jobs, profession):
+    """Filter job list to only those matching a profession. 'all' returns all jobs."""
+    if not profession or profession == 'all':
+        return jobs
+    kws = PROFESSION_KEYWORDS.get(profession, [])
+    if not kws:
+        return jobs
+    result = []
+    for j in jobs:
+        title = (j.get('title', '') + ' ' + j.get('snippet', '')).lower()
+        if any(k in title for k in kws):
+            result.append(j)
+    return result
+
 
 # ── Construction industry filter (all built environment professionals) ─────────
 CONSTRUCTION_KW = {
@@ -144,15 +217,16 @@ _is_civil = _is_construction
 # Jobberman is Next.js — it renders server-side for some pages.
 # The construction category page and search results are SSR.
 
+# date=last30days — Jobberman supports ?date=last30days on search URLs
 JOBBERMAN_SEARCHES = [
     'https://www.jobberman.com/jobs/construction-site-services',
-    'https://www.jobberman.com/jobs?q=civil+engineer&l=Nigeria',
-    'https://www.jobberman.com/jobs?q=structural+engineer&l=Nigeria',
-    'https://www.jobberman.com/jobs?q=site+engineer&l=Nigeria',
-    'https://www.jobberman.com/jobs?q=quantity+surveyor&l=Nigeria',
-    'https://www.jobberman.com/jobs?q=architect+construction&l=Nigeria',
-    'https://www.jobberman.com/jobs?q=project+manager+construction&l=Nigeria',
-    'https://www.jobberman.com/jobs?q=hse+officer&l=Nigeria',
+    'https://www.jobberman.com/jobs?q=civil+engineer&l=Nigeria&date=last30days',
+    'https://www.jobberman.com/jobs?q=structural+engineer&l=Nigeria&date=last30days',
+    'https://www.jobberman.com/jobs?q=site+engineer&l=Nigeria&date=last30days',
+    'https://www.jobberman.com/jobs?q=quantity+surveyor&l=Nigeria&date=last30days',
+    'https://www.jobberman.com/jobs?q=architect+construction&l=Nigeria&date=last30days',
+    'https://www.jobberman.com/jobs?q=project+manager+construction&l=Nigeria&date=last30days',
+    'https://www.jobberman.com/jobs?q=hse+officer&l=Nigeria&date=last30days',
 ]
 
 def scrape_jobberman(max_pages=2):
@@ -160,13 +234,16 @@ def scrape_jobberman(max_pages=2):
 
     for base_url in JOBBERMAN_SEARCHES:
         for pg in range(1, max_pages + 1):
-            # Use ? for first param, & if URL already has query string
+            # Only the category URL supports pagination — search URLs (?q=) don't
+            # have reliable page 2 on Jobberman. Skip page 2+ for search URLs.
+            if pg > 1 and '?q=' in base_url:
+                break
             if pg == 1:
                 url = base_url
             elif '?' in base_url:
                 url = f"{base_url}&page={pg}"
             else:
-                url = f"{base_url}?page={pg}" 
+                url = f"{base_url}?page={pg}"
             log.info(f"Jobberman: {url}")
             r = _get(url)
             if not r:
@@ -206,6 +283,16 @@ def scrape_jobberman(max_pages=2):
 
                     listings = _find_listings(props)
                     log.info(f"  Next.js listings found: {len(listings)}")
+                    # Log first item's keys so we can see exactly what Jobberman provides
+                    if listings:
+                        first = listings[0]
+                        log.info(f"  JOBBERMAN ITEM KEYS: {list(first.keys())}")
+                        # Log key fields we care about
+                        for dbg_key in ('title','job_title','slug','id','uid','company',
+                                        'employer','location','city','state','summary',
+                                        'description','created_at','permalink','url'):
+                            if dbg_key in first:
+                                log.info(f"  [{dbg_key}] = {str(first[dbg_key])[:120]!r}")
                     for item in listings:
                         job = _parse_jobberman_json(item)
                         if job and job['url'] not in seen:
@@ -229,21 +316,133 @@ def scrape_jobberman(max_pages=2):
     return jobs
 
 
+def _extract_str(item, *keys):
+    """Try multiple keys, return first non-empty string value found."""
+    for k in keys:
+        v = item.get(k)
+        if isinstance(v, dict):
+            for nk in ('name', 'title', 'label', 'value', 'display_name'):
+                nv = _clean(v.get(nk, ''))
+                if nv: return nv
+        elif isinstance(v, str):
+            v = _clean(v)
+            if v: return v
+    return ''
+
+
+def _company_from_slug(slug, title):
+    """
+    Extract company from Jobberman slug pattern: {job-title}-{company-name}
+    e.g. 'civil-engineer-julius-berger' → 'Julius Berger'
+    """
+    if not slug or not title:
+        return ''
+    title_slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    s = slug.lower().strip()
+    if s.startswith(title_slug):
+        remainder = s[len(title_slug):].strip('-')
+        if remainder and len(remainder) > 2:
+            # Reject if remainder looks like a location or generic word
+            skip = {'nigeria','lagos','abuja','limited','ltd','llc','plc','and','the'}
+            words = remainder.split('-')
+            if not all(w in skip for w in words):
+                return remainder.replace('-', ' ').title()
+    return ''
+
+
+def _is_valid_company(name):
+    """
+    Reject strings that are clearly hash IDs or internal codes, not company names.
+    e.g. 'Wrz260', '5P44Xg', 'Mechanical M0Pdgg' → False
+    e.g. 'Julius Berger', 'Dangote Group', 'RCC Nigeria' → True
+    """
+    if not name or len(name.strip()) < 2:
+        return False
+    n = name.strip()
+    tokens = n.split()
+    for tok in tokens:
+        # Mixed alpha+digit token pattern = hash (e.g. M0Pdgg, 9K90E5, Vdp8Ev)
+        if re.match(r'^[A-Za-z]{1,4}[0-9][A-Za-z0-9]{1,6}$', tok):
+            return False
+        # Starts with digit (e.g. 5P44Xg, 2Kq50G)
+        if re.match(r'^[0-9][A-Za-z0-9]+$', tok):
+            return False
+    # Short single alphanumeric token with digits = ID
+    if re.match(r'^[A-Za-z0-9]{4,10}$', n) and any(c.isdigit() for c in n):
+        return False
+    # Single-word must be ALL-CAPS acronym (RCC, CCECC) otherwise it's an ID
+    if len(tokens) == 1 and not tokens[0].isupper():
+        return False
+    return True
+
+
 def _parse_jobberman_json(item):
-    """Parse a job from Jobberman's Next.js JSON data."""
+    """Parse a job from Jobberman's Next.js JSON data.
+    Tries every field name variant Jobberman has used across API versions.
+    """
     try:
-        title = _clean(item.get('title') or item.get('job_title') or item.get('name',''))
+        title = _extract_str(item,
+            'title', 'job_title', 'name', 'position', 'role')
         if not title: return None
-        slug  = item.get('slug') or item.get('id','')
-        url   = f"https://www.jobberman.com/listings/{slug}" if slug else ''
+
+        # Jobberman uses hash IDs (e.g. "Vdp8Ev") as slug/id for the listing URL.
+        # The human-readable slug (e.g. "civil-engineer-julius-berger") may exist
+        # in a separate 'permalink', 'url', 'canonical', or 'slug' field.
+        # We need both: hash for URL construction, readable slug for company extraction.
+        hash_id = _extract_str(item, 'id', 'job_id', 'uid', 'ref')
+        readable_slug = _extract_str(item, 'slug', 'job_slug', 'permalink',
+                                     'url', 'canonical_url', 'job_url')
+        # If readable_slug looks like a full URL, extract just the path segment
+        if readable_slug and ('/' in readable_slug):
+            readable_slug = readable_slug.rstrip('/').split('/')[-1]
+        # If readable_slug looks like a hash (short, no hyphens, alphanumeric), discard it
+        if readable_slug and re.match(r'^[A-Za-z0-9]{4,10}$', readable_slug):
+            readable_slug = ''
+        # Build the URL: prefer hash_id for reliability, fall back to readable
+        url_slug = hash_id or readable_slug
+        url = f"https://www.jobberman.com/listings/{url_slug}" if url_slug else ''
+
+        company = _extract_str(item,
+            'company', 'employer', 'organization', 'company_name',
+            'hiring_company', 'recruiter', 'hiring_organization')
+        # Reject hash IDs and garbage leaking into company field
+        if not _is_valid_company(company):
+            company = ''
+        # Extract company from readable slug if JSON fields are empty/invalid
+        if not company and readable_slug:
+            company = _company_from_slug(readable_slug, title)
+            if not _is_valid_company(company):
+                company = ''
+
+        location = _extract_str(item,
+            'location', 'city', 'state', 'location_name', 'job_location',
+            'address', 'work_location')
+        if not location:
+            # Try building from city + state
+            city  = _extract_str(item, 'city', 'town')
+            state = _extract_str(item, 'state', 'province', 'region')
+            location = ', '.join(filter(None, [city, state])) or 'Nigeria'
+
+        salary = _extract_str(item,
+            'salary', 'salary_range', 'pay', 'compensation',
+            'salary_from', 'remuneration')
+
+        snippet = _extract_str(item,
+            'summary', 'description', 'excerpt', 'job_description',
+            'responsibilities', 'overview', 'body')
+
+        posted = _parse_date(_extract_str(item,
+            'created_at', 'date', 'posted_date', 'date_posted',
+            'published_at', 'posted_at', 'created'))
+
         return {
             'title':    title,
-            'company':  _clean(item.get('company',{}).get('name','') if isinstance(item.get('company'), dict) else item.get('company','')),
-            'location': _clean(item.get('location','') or item.get('city','')) or 'Nigeria',
-            'salary':   _clean(item.get('salary','') or ''),
+            'company':  company,
+            'location': location or 'Nigeria',
+            'salary':   salary,
             'url':      url,
-            'snippet':  _clean(item.get('summary','') or item.get('description',''))[:280],
-            'posted':   _parse_date(item.get('created_at','') or item.get('date','')),
+            'snippet':  _snippet(snippet, title, max_len=280),
+            'posted':   posted,
             'source':   'Jobberman',
         }
     except Exception as e:
@@ -272,9 +471,17 @@ def _parse_jobberman_html(soup, seen, jobs):
             container = a.find_parent('div') or a.find_parent('li') or a
             text = _clean(container.get_text())
             company = _company(container)
+            if not _is_valid_company(company):
+                company = ''
+            # Fallback: extract company from slug in URL
+            if not company:
+                slug = href.rstrip('/').split('/')[-1]
+                company = _company_from_slug(slug, title)
+            if not _is_valid_company(company):
+                company = ''
             jobs.append({'title': title, 'company': company, 'location': _location(text),
                          'salary': _salary(text), 'url': url,
-                         'snippet': text[:280], 'posted': datetime.now().strftime('%Y-%m-%d'),
+                         'snippet': _snippet(text, title), 'posted': datetime.now().strftime('%Y-%m-%d'),
                          'source': 'Jobberman'})
             new += 1
         return new
@@ -286,17 +493,53 @@ def _parse_jobberman_html(soup, seen, jobs):
         if not href or href in seen: continue
         url = href if href.startswith('http') else 'https://www.jobberman.com' + href
         seen.add(href)
+
+        # Title — prefer h2/h3/h4, fall back to link text
         title_el = card.find(['h2','h3','h4'])
         title    = _clean(title_el.get_text()) if title_el else _clean(href_el.get_text())
         if not title or len(title) < 4: continue
-        text      = _clean(card.get_text())
-        company   = _company(card)
-        date_el   = card.find('time') or card.find(class_=re.compile(r'date|posted|ago', re.I))
-        jobs.append({'title': title, 'company': company, 'location': _location(text),
-                     'salary': _salary(text), 'url': url,
-                     'snippet': text[:280],
-                     'posted': _parse_date(date_el.get_text() if date_el else ''),
-                     'source': 'Jobberman'})
+
+        # Company — try multiple selectors Jobberman uses
+        company = ''
+        for sel in [
+            {'attrs': {'data-company': True}},
+            {'class_': re.compile(r'company|employer|org|recruiter', re.I)},
+        ]:
+            el = card.find(**sel)
+            if el:
+                t = _clean(el.get('data-company','') or el.get_text())
+                if t and len(t) < 80 and not any(x in t.lower() for x in
+                        ['engineer','manager','officer','surveyor','supervisor',
+                         'apply','view','lagos','abuja','nigeria','full time','contract']):
+                    company = t; break
+        if not company:
+            company = _company(card)
+        # Last resort: slug-based extraction
+        if not company:
+            card_slug = href.rstrip('/').split('/')[-1]
+            company = _company_from_slug(card_slug, title)
+        # Final guard: reject anything that looks like an ID, not a company name
+        if not _is_valid_company(company):
+            company = ''
+
+        # Location — try data attrs first, then text regex
+        loc_el = card.find(attrs={'data-location': True}) or                  card.find(class_=re.compile(r'location|city|state|region', re.I))
+        if loc_el:
+            location = _clean(loc_el.get('data-location','') or loc_el.get_text()) or 'Nigeria'
+        else:
+            location = _location(_clean(card.get_text()))
+
+        text    = _clean(card.get_text())
+        date_el = card.find('time') or card.find(class_=re.compile(r'date|posted|ago', re.I))
+        posted  = _parse_date(date_el.get('datetime','') or date_el.get_text() if date_el else '')
+
+        # Snippet — exclude title, company, location, date from card text
+        noise = ' '.join(filter(None, [title, company, location]))
+        snip  = _snippet(text, noise)
+
+        jobs.append({'title': title, 'company': company, 'location': location,
+                     'salary': _salary(text), 'url': url, 'snippet': snip,
+                     'posted': posted, 'source': 'Jobberman'})
         new += 1
     return new
 
@@ -402,9 +645,9 @@ def scrape_ngcareers(max_pages=2):
 
 # ── HotNigerianJobs scraper ───────────────────────────────────────────────────
 HOTNG_SEARCHES = [
-    'https://www.hotnigerianobs.com/search/civil+engineer',
-    'https://www.hotnigerianobs.com/search/structural+engineer',
-    'https://www.hotnigerianobs.com/search/site+engineer',
+    'https://www.hotnigerianjobs.com/search/civil+engineer',
+    'https://www.hotnigerianjobs.com/search/structural+engineer',
+    'https://www.hotnigerianjobs.com/search/site+engineer',
 ]
 
 def scrape_hotng(max_pages=1):
@@ -453,16 +696,17 @@ def scrape_hotng(max_pages=1):
 # No login required. No API key. Works on Render.
 # Rate limit: 1 request/sec already enforced by _get() sleep.
 
+# f_TPR=r2592000 = posted within last 30 days (2592000 seconds)
 LINKEDIN_SEARCHES = [
     # Civil & structural
-    'https://www.linkedin.com/jobs/civil-engineer-jobs-nigeria',
-    'https://www.linkedin.com/jobs/structural-engineer-jobs-nigeria',
-    'https://www.linkedin.com/jobs/site-engineer-jobs-nigeria',
+    'https://www.linkedin.com/jobs/civil-engineer-jobs-nigeria/?f_TPR=r2592000',
+    'https://www.linkedin.com/jobs/structural-engineer-jobs-nigeria/?f_TPR=r2592000',
+    'https://www.linkedin.com/jobs/site-engineer-jobs-nigeria/?f_TPR=r2592000',
     # Broader construction
-    'https://www.linkedin.com/jobs/quantity-surveyor-jobs-nigeria',
-    'https://www.linkedin.com/jobs/construction-project-manager-jobs-nigeria',
-    'https://www.linkedin.com/jobs/architect-jobs-nigeria',
-    'https://www.linkedin.com/jobs/hse-officer-jobs-nigeria',
+    'https://www.linkedin.com/jobs/quantity-surveyor-jobs-nigeria/?f_TPR=r2592000',
+    'https://www.linkedin.com/jobs/construction-project-manager-jobs-nigeria/?f_TPR=r2592000',
+    'https://www.linkedin.com/jobs/architect-jobs-nigeria/?f_TPR=r2592000',
+    'https://www.linkedin.com/jobs/hse-officer-jobs-nigeria/?f_TPR=r2592000',
 ]
 
 def scrape_linkedin(max_pages=1):
@@ -607,9 +851,13 @@ def fetch_jobs(sources=None, max_pages=2, force_refresh=False):
         k = j.get('url') or j.get('title','')
         if k not in seen: seen.add(k); unique.append(j)
 
+    # Drop jobs older than 30 days (date filter as backstop)
+    cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    unique = [j for j in unique if j.get('posted', '2000-01-01') >= cutoff]
+
     unique.sort(key=lambda j: j.get('posted',''), reverse=True)
     _set_cache(key, unique)
-    log.info(f"fetch_jobs: {len(unique)} civil / {len(all_jobs)} raw")
+    log.info(f"fetch_jobs: {len(unique)} recent / {len(all_jobs)} raw")
     return unique
 
 

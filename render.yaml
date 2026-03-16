@@ -19,3 +19,7 @@ services:
         sync: false
       - key: COHERE_API_KEY
         sync: false
+      - key: SKIP_OLLAMA
+        value: true
+      - key: ADMIN_KEY
+        sync: false

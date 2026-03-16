@@ -1,18 +1,11 @@
 """
-setup.py — Run once to set up CivilApply correctly.
+setup.py — Run once to set up CivilApply.
 
 Usage:
     python setup.py
-
-What it does:
-    1. Checks Python version
-    2. Installs required packages
-    3. Installs Playwright + Chromium browser
-    4. Creates the static/ folder if missing
-    5. Verifies everything works
 """
 
-import os, sys, subprocess, shutil
+import os, sys, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -33,32 +26,26 @@ print("════════════════════════�
 v = sys.version_info
 print(f"Python {v.major}.{v.minor}.{v.micro}", "✓" if v >= (3, 9) else "⚠ (3.9+ recommended)")
 
-# 2. Core packages
-print("\n[1/4] Installing Python packages...")
-run(f"{sys.executable} -m pip install flask requests beautifulsoup4 playwright --quiet", "packages")
+# 2. Core packages only — no Playwright, no browser needed
+print("\n[1/3] Installing packages...")
+run(f"{sys.executable} -m pip install flask requests beautifulsoup4 reportlab pdfplumber gunicorn --quiet", "packages")
 
-# 3. Playwright browser
-print("\n[2/4] Installing Playwright Chromium browser...")
-run(f"{sys.executable} -m playwright install chromium", "Playwright Chromium")
-
-# 4. static/ folder
-print("\n[3/4] Checking static/ folder...")
+# 3. Check static/app.js
+print("\n[2/3] Checking static/ folder...")
 static_dir = os.path.join(HERE, 'static')
 app_js     = os.path.join(static_dir, 'app.js')
-
 os.makedirs(static_dir, exist_ok=True)
 
 if not os.path.exists(app_js):
-    print(f"  ⚠  static/app.js not found!")
-    print(f"     Place app.js in: {static_dir}")
+    print(f"  ⚠  static/app.js not found — download it from GitHub")
 else:
     size = os.path.getsize(app_js)
-    print(f"  ✓  static/app.js found ({size} bytes)")
+    print(f"  ✓  static/app.js found ({size:,} bytes)")
 
-# 5. Verify imports
-print("\n[4/4] Verifying imports...")
+# 4. Verify imports
+print("\n[3/3] Verifying imports...")
 errors = []
-for module in ['flask', 'requests', 'bs4']:
+for module in ['flask', 'requests', 'bs4', 'reportlab', 'pdfplumber']:
     try:
         __import__(module)
         print(f"  ✓  {module}")
@@ -66,21 +53,22 @@ for module in ['flask', 'requests', 'bs4']:
         print(f"  ✗  {module}: {e}")
         errors.append(module)
 
-try:
-    from playwright.sync_api import sync_playwright
-    print("  ✓  playwright")
-except ImportError:
-    print("  ✗  playwright — run: pip install playwright && python -m playwright install chromium")
-    errors.append('playwright')
+# Check .env / SMTP hint
+print("\n[Optional] Email sending (for Apply by Email feature):")
+smtp = os.environ.get('SMTP_EMAIL', '')
+if smtp:
+    print(f"  ✓  SMTP_EMAIL set ({smtp})")
+else:
+    print("  ℹ  SMTP_EMAIL not set — create a .env file with SMTP_EMAIL and SMTP_PASSWORD")
+    print("     to enable the 'Apply by Email' feature. Not required to run the app.")
 
 # Summary
 print("\n══════════════════════════════════════════")
 if errors:
-    print(f"  ⚠  Issues: {', '.join(errors)}")
-    print("  Job scraping may not work until playwright is installed.")
+    print(f"  ⚠  Missing: {', '.join(errors)}")
+    print(f"     Run: pip install {' '.join(errors)}")
 else:
     print("  ✓  All dependencies installed!")
-
 print(f"\n  Start the server:  python web.py")
 print(f"  Open in browser:   http://127.0.0.1:5000")
 print("══════════════════════════════════════════\n")

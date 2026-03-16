@@ -25,9 +25,6 @@ def _load_env():
             k, v = k.strip(), v.strip().strip('"').strip("'")
             if k and v and k not in os.environ:
                 os.environ[k] = v
-    print("--- DEBUG: ENVIRONMENT CHECK ---")
-    print(f"DATABASE_URL found: {os.environ.get('DATABASE_URL') is not None}")
-    print("--------------------------------")
 
 _load_env()
 
@@ -309,15 +306,7 @@ def upload_cv():
         if len(pdf_bytes) > 5 * 1024 * 1024:  # 5MB limit
             return jsonify({'status': 'error', 'message': 'File too large (max 5MB)'})
 
-        try:
-            parsed_cv = parse_cv_from_bytes(pdf_bytes, f.filename)
-        except Exception as parse_err:
-            err_str = str(parse_err).lower()
-            if 'timed out' in err_str or 'timeout' in err_str:
-                return jsonify({'status': 'error', 'message': 'CV parsing timed out — please try again. This usually succeeds on the second attempt.'})
-            if 'nonetype' in err_str or 'attribute' in err_str:
-                return jsonify({'status': 'error', 'message': 'Could not read your CV. Make sure it is a text-based PDF, not a scanned image.'})
-            raise
+        parsed_cv = parse_cv_from_bytes(pdf_bytes, f.filename)
 
         # Check if CV is civil engineering
         from civil_engineering.cv_reader import detect_cv_industry
@@ -923,24 +912,12 @@ def batch_send():
 
 # ── Application Tracker ────────────────────────────────────────────────────────
 
-# def _tracker_db():
-#     """Return a sqlite3 connection to the applications tracker DB."""
-#     import sqlite3
-#     db_path = os.path.join(DATA_DIR, 'applications.db')
-#     conn = sqlite3.connect(db_path)
-#     conn.row_factory = sqlite3.Row
-DATABASE_URL = os.environ.get('DATABASE_URL')
-USE_POSTGRES = bool(DATABASE_URL)
-
 def _tracker_db():
-    if USE_POSTGRES:
-        import psycopg2, psycopg2.extras
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    else:
-        import sqlite3
-        db_path = os.path.join(DATA_DIR, 'applications.db')
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+    """Return a sqlite3 connection to the applications tracker DB."""
+    import sqlite3
+    db_path = os.path.join(DATA_DIR, 'applications.db')
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     conn.execute('''CREATE TABLE IF NOT EXISTS applications (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id   TEXT DEFAULT '',
@@ -2443,7 +2420,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <span id="batch-summary-text" style="font-size:11px;color:var(--text)"></span>
         <div style="display:flex;gap:8px;align-items:center">
           <label style="font-size:10px;color:var(--muted)">
-            <input type="checkbox" id="batch-select-all" onchange="batchSelectAll(this.checked)" style="accent-color:var(--accent)"> Select all
+            <input type="checkbox" id="batch-select-all" onchange="batchSelectAll(this.checked)" style="accent-color:var(--accent)"> Select all email-apply
           </label>
           <button onclick="sendBatchSelected()" id="batch-send-btn"
             style="background:var(--accent);color:#0e0f0c;border:none;padding:7px 18px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;border-radius:2px;letter-spacing:0.5px">
