@@ -114,21 +114,23 @@ def _set_session_cv(sid, cv):
             _SESSION_TS.pop(s, None)
 
 
-def _persist_cv_to_db(uid: str, cv: dict):
-    """Save CV JSON to users table for logged-in users. Fire-and-forget."""
-    if not uid:
-        return
+def _persist_cv_to_db(user_id, cv_data_json):
+    """Move a guest CV from temporary storage to the permanent user record."""
     try:
         conn = _tracker_db()
-        conn.execute(
-            'UPDATE users SET cv_data=?, last_seen=datetime("now","localtime") WHERE id=?',
-            (json.dumps(cv), uid)
-        )
+        cur = conn.cursor()
+        PL = '%s' if USE_POSTGRES else '?'
+        
+        # Update the cv_data column for the specific user
+        query = f"UPDATE users SET cv_data = {PL} WHERE id = {PL}"
+        
+        cur.execute(query, (cv_data_json, user_id))
+        
         conn.commit()
+        cur.close()
         conn.close()
-    except Exception:
-        pass
-
+    except Exception as e:
+        print(f"CV PERSISTENCE ERROR: {e}")
 
 def _load_cv_from_db(uid: str):
     """Load CV JSON from DB. Returns dict or None."""
@@ -136,11 +138,22 @@ def _load_cv_from_db(uid: str):
         return None
     try:
         conn = _tracker_db()
-        row  = conn.execute('SELECT cv_data FROM users WHERE id=?', (uid,)).fetchone()
+        cur = conn.cursor()
+        PL = '%s' if USE_POSTGRES else '?'
+        
+        # Use the cursor and the dynamic placeholder
+        cur.execute(f'SELECT cv_data FROM users WHERE id={PL}', (uid,))
+        row = cur.fetchone()
+        
+        cur.close()
         conn.close()
+        
         if row and row['cv_data']:
+            # row['cv_data'] works for both SQLite Row and Postgres DictCursor
+            import json
             return json.loads(row['cv_data'])
-    except Exception:
+    except Exception as e:
+        print(f"CV LOAD ERROR: {e}")
         pass
     return None
 
@@ -935,94 +948,135 @@ USE_POSTGRES = bool(DATABASE_URL)
 def _tracker_db():
     if USE_POSTGRES:
         import psycopg2, psycopg2.extras
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
+        _setup_postgres(conn)
+        return conn
     else:
         import sqlite3
         db_path = os.path.join(DATA_DIR, 'applications.db')
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-    conn.execute('''CREATE TABLE IF NOT EXISTS applications (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id   TEXT DEFAULT '',
-        title     TEXT NOT NULL,
-        company   TEXT,
-        location  TEXT,
-        salary    TEXT,
-        url       TEXT,
-        platform  TEXT,
-        method    TEXT,
-        status    TEXT DEFAULT 'Applied',
-        notes     TEXT DEFAULT '',
-        applied_at TEXT DEFAULT (datetime('now', 'localtime'))
-    )''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS users (
-        id            TEXT PRIMARY KEY,
-        email         TEXT UNIQUE NOT NULL,
-        name          TEXT DEFAULT '',
-        password_hash TEXT DEFAULT '',
-        cv_data       TEXT DEFAULT '',
-        created_at    TEXT DEFAULT (datetime('now', 'localtime')),
-        last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
-    )''')
-    # Migrate: rebuild users table if it was created without 'id' column
-    # (this happens when Render's persistent DB was created by an older deploy)
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if 'id' not in cols:
-            conn.execute('''CREATE TABLE IF NOT EXISTS users_new (
-                id            TEXT PRIMARY KEY,
-                email         TEXT UNIQUE NOT NULL,
-                name          TEXT DEFAULT '',
-                password_hash TEXT DEFAULT '',
-                cv_data       TEXT DEFAULT '',
-                created_at    TEXT DEFAULT (datetime('now', 'localtime')),
-                last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
-            )''')
-            # Copy whatever columns exist in old table
-            old_cols = set(cols) & {'email', 'name', 'password_hash', 'cv_data', 'created_at', 'last_seen'}
-            col_list = ', '.join(old_cols)
-            conn.execute(f'INSERT OR IGNORE INTO users_new ({col_list}) SELECT {col_list} FROM users')
-            conn.execute('DROP TABLE users')
-            conn.execute('ALTER TABLE users_new RENAME TO users')
-            conn.commit()
-    except Exception:
-        pass
-    # Migrate: add new columns to users if upgrading old DB
-    for _col, _def in [('password_hash', 'TEXT DEFAULT ""'), ('cv_data', 'TEXT DEFAULT ""')]:
+        conn.execute('''CREATE TABLE IF NOT EXISTS applications (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id   TEXT DEFAULT '',
+            title     TEXT NOT NULL,
+            company   TEXT,
+            location  TEXT,
+            salary    TEXT,
+            url       TEXT,
+            platform  TEXT,
+            method    TEXT,
+            status    TEXT DEFAULT 'Applied',
+            notes     TEXT DEFAULT '',
+            applied_at TEXT DEFAULT (datetime('now', 'localtime'))
+        )''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS users (
+            id            TEXT PRIMARY KEY,
+            email         TEXT UNIQUE NOT NULL,
+            name          TEXT DEFAULT '',
+            password_hash TEXT DEFAULT '',
+            cv_data       TEXT DEFAULT '',
+            created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+            last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
+        )''')
+        # Migrate: rebuild users table if it was created without 'id' column
+        # (this happens when Render's persistent DB was created by an older deploy)
         try:
-            conn.execute(f'ALTER TABLE users ADD COLUMN {_col} {_def}')
-            conn.commit()
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+            if 'id' not in cols:
+                conn.execute('''CREATE TABLE IF NOT EXISTS users_new (
+                    id            TEXT PRIMARY KEY,
+                    email         TEXT UNIQUE NOT NULL,
+                    name          TEXT DEFAULT '',
+                    password_hash TEXT DEFAULT '',
+                    cv_data       TEXT DEFAULT '',
+                    created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+                    last_seen     TEXT DEFAULT (datetime('now', 'localtime'))
+                )''')
+                # Copy whatever columns exist in old table
+                old_cols = set(cols) & {'email', 'name', 'password_hash', 'cv_data', 'created_at', 'last_seen'}
+                col_list = ', '.join(old_cols)
+                conn.execute(f'INSERT OR IGNORE INTO users_new ({col_list}) SELECT {col_list} FROM users')
+                conn.execute('DROP TABLE users')
+                conn.execute('ALTER TABLE users_new RENAME TO users')
+                conn.commit()
         except Exception:
             pass
-    # Migrate: add user_id to applications if missing (old DB without it)
-    for _col, _def in [('user_id', 'TEXT DEFAULT ""'), ('notes', 'TEXT DEFAULT ""')]:
-        try:
-            conn.execute(f'ALTER TABLE applications ADD COLUMN {_col} {_def}')
-            conn.commit()
-        except Exception:
-            pass
-    conn.execute('''CREATE TABLE IF NOT EXISTS events (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id    TEXT DEFAULT '',
-        session_id TEXT DEFAULT '',
-        event      TEXT NOT NULL,
-        meta       TEXT DEFAULT '{}',
-        ip         TEXT DEFAULT '',
-        ua         TEXT DEFAULT '',
-        created_at TEXT DEFAULT (datetime('now', 'localtime'))
-    )''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS feedback (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id    TEXT DEFAULT '',
-        session_id TEXT DEFAULT '',
-        rating     INTEGER NOT NULL,
-        message    TEXT DEFAULT '',
-        context    TEXT DEFAULT '',
-        created_at TEXT DEFAULT (datetime('now', 'localtime'))
-    )''')
-    conn.commit()
-    return conn
+        # Migrate: add new columns to users if upgrading old DB
+        for _col, _def in [('password_hash', 'TEXT DEFAULT ""'), ('cv_data', 'TEXT DEFAULT ""')]:
+            try:
+                conn.execute(f'ALTER TABLE users ADD COLUMN {_col} {_def}')
+                conn.commit()
+            except Exception:
+                pass
+        # Migrate: add user_id to applications if missing (old DB without it)
+        for _col, _def in [('user_id', 'TEXT DEFAULT ""'), ('notes', 'TEXT DEFAULT ""')]:
+            try:
+                conn.execute(f'ALTER TABLE applications ADD COLUMN {_col} {_def}')
+                conn.commit()
+            except Exception:
+                pass
+        conn.execute('''CREATE TABLE IF NOT EXISTS events (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            event      TEXT NOT NULL,
+            meta       TEXT DEFAULT '{}',
+            ip         TEXT DEFAULT '',
+            ua         TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        )''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS feedback (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            rating     INTEGER NOT NULL,
+            message    TEXT DEFAULT '',
+            context    TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        )''')
+        conn.commit()
+        return conn
 
+def _setup_postgres(conn):
+    """Run Postgres-specific table creation."""
+    cur = conn.cursor()
+    # Note: 'SERIAL' is the Postgres version of 'AUTOINCREMENT'
+    try:
+        cur.execute('''CREATE TABLE IF NOT EXISTS applications (
+            id          SERIAL PRIMARY KEY,
+            user_id     TEXT DEFAULT '',
+            title       TEXT NOT NULL,
+            company     TEXT,
+            location    TEXT,
+            salary      TEXT,
+            url         TEXT,
+            platform    TEXT,
+            method      TEXT,
+            status      TEXT DEFAULT 'Applied',
+            notes       TEXT DEFAULT '',
+            applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        cur.execute('''CREATE TABLE IF NOT EXISTS users (
+            id            TEXT PRIMARY KEY,
+            email         TEXT UNIQUE NOT NULL,
+            name          TEXT DEFAULT '',
+            password_hash TEXT DEFAULT '',
+            cv_data       TEXT DEFAULT '',
+            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        # Add feedback and events for Postgres too
+        cur.execute('''CREATE TABLE IF NOT EXISTS feedback (
+            id SERIAL PRIMARY KEY, 
+            user_id TEXT, rating INTEGER, message TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        conn.commit()
+    finally:
+        cur.close()
 
 @app.route('/tracker/add', methods=['POST'])
 def tracker_add():
@@ -1033,22 +1087,23 @@ def tracker_add():
         return jsonify({'status': 'error', 'message': 'Job title required'})
     try:
         conn = _tracker_db()
-        uid = session.get('user_id') or session.get('cv_id', 'anonymous')
-        conn.execute(
-            '''INSERT INTO applications (title, company, location, salary, url, platform, method, status, notes, user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (title,
-             data.get('company', ''),
-             data.get('location', ''),
-             data.get('salary', ''),
-             data.get('url', ''),
-             data.get('platform', ''),
-             data.get('method', ''),
-             data.get('status', 'Applied'),
-             data.get('notes', ''),
-             uid)
-        )
+        cur = conn.cursor() # Create the worker (cursor)
+
+        placeholder = '%s' if USE_POSTGRES else '?'
+
+        # Check if the user is logged in and use user_id, otherwise fall back to cv_id or 'anonymous'
+        uid = session.get('user_id') or session.get('cv_id') or 'anonymous'
+        query = f'''INSERT INTO applications 
+               (title, company, location, salary, url, platform, method, status, notes, user_id) 
+               VALUES ({", ".join([placeholder]*10)})'''
+        cur.execute(query, (
+        title, data.get('company', ''), data.get('location', ''), 
+        data.get('salary', ''), data.get('url', ''), data.get('platform', ''), 
+        data.get('method', ''), data.get('status', 'Applied'), data.get('notes', ''), 
+        uid
+    ))
         conn.commit()
+        cur.close()
         conn.close()
         return jsonify({'status': 'ok'})
     except Exception as e:
@@ -1060,22 +1115,37 @@ def tracker_list():
     """Return all tracked applications as JSON."""
     try:
         conn = _tracker_db()
-        uid  = session.get('user_id')
-        sid  = session.get('cv_id', '')
+        cur = conn.cursor() 
+
+        # 1. Use the placeholder variable!
+        PL = '%s' if USE_POSTGRES else '?'
+        
+        uid = session.get('user_id')
+        sid = session.get('cv_id', '')
+
         if uid:
-            # Pull records stored under user_id OR old cv_id (records saved before login)
-            rows = conn.execute(
-                'SELECT * FROM applications WHERE user_id=? OR (user_id=? AND user_id != ?) ORDER BY applied_at DESC',
-                (uid, sid, uid)
-            ).fetchall()
+            # 2. Split execute and fetchall
+            query = f'SELECT * FROM applications WHERE user_id={PL} OR (user_id={PL} AND user_id != {PL}) ORDER BY applied_at DESC'
+            cur.execute(query, (uid, sid, uid))
+            rows = cur.fetchall()
         else:
-            rows = conn.execute(
-                'SELECT * FROM applications WHERE user_id=? OR user_id=\'anonymous\' ORDER BY applied_at DESC',
-                (sid,)
-            ).fetchall()
+            # 3. Handle 'anonymous' logic carefully
+            query = f'SELECT * FROM applications WHERE user_id={PL} OR user_id=\'anonymous\' ORDER BY applied_at DESC'
+            cur.execute(query, (sid,))
+            rows = cur.fetchall()
+
+        # 4. Conversion to Dictionary
+        # SQLite's Row and Postgres's DictCursor both support dict() conversion differently
+        result = []
+        for r in rows:
+            result.append(dict(r))
+
+        cur.close()
         conn.close()
-        return jsonify([dict(r) for r in rows])
+        return jsonify(result)
+        
     except Exception as e:
+        print(f"TRACKER LIST ERROR: {traceback.format_exc()}")
         return jsonify({'status': 'error', 'message': str(e)})
 
 
@@ -1084,19 +1154,39 @@ def tracker_update():
     """Update status or notes on an application."""
     data = request.get_json() or {}
     app_id = data.get('id')
+    field  = data.get('field', 'status')
+    val    = data.get('value', '')
+    
     if not app_id:
         return jsonify({'status': 'error', 'message': 'ID required'})
+    if field not in ('status', 'notes'):
+        return jsonify({'status': 'error', 'message': 'Invalid field'})
+
     try:
-        conn  = _tracker_db()
-        field = data.get('field', 'status')
-        if field not in ('status', 'notes'):
-            return jsonify({'status': 'error', 'message': 'Invalid field'})
-        conn.execute(f'UPDATE applications SET {field} = ? WHERE id = ?',
-                     (data.get('value', ''), app_id))
+        conn = _tracker_db()
+        cur  = conn.cursor()
+        PL   = '%s' if USE_POSTGRES else '?'
+
+        uid = session.get('user_id')
+        sid = session.get('cv_id', '')
+
+        # Simplified query: check if the record belongs to current user or is anonymous
+        query = f'''
+            UPDATE applications 
+            SET {field} = {PL} 
+            WHERE id = {PL} 
+              AND (user_id = {PL} OR user_id = {PL} OR user_id = '' OR user_id = 'anonymous')
+        '''
+        
+        # Match the 4 placeholders exactly:
+        cur.execute(query, (val, app_id, uid, sid))
+        
         conn.commit()
+        cur.close() # Always close cursor
         conn.close()
         return jsonify({'status': 'ok'})
     except Exception as e:
+        print(f"UPDATE ERROR: {traceback.format_exc()}") # Log to Render console
         return jsonify({'status': 'error', 'message': str(e)})
 
 
@@ -1105,20 +1195,35 @@ def tracker_delete():
     """Delete an application from the tracker."""
     data   = request.get_json() or {}
     app_id = data.get('id')
+    
     if not app_id:
         return jsonify({'status': 'error', 'message': 'ID required'})
+        
     try:
         conn = _tracker_db()
-        uid = session.get('user_id') or session.get('cv_id', '')
-        # Delete if owned by this user_id, cv_id, anonymous, or no owner at all
-        conn.execute(
-            'DELETE FROM applications WHERE id = ? AND (user_id=? OR user_id=? OR user_id=\'\' OR user_id=\'anonymous\')',
-            (app_id, uid, session.get('cv_id', ''))
-        )
+        cur = conn.cursor()
+        PL = '%s' if USE_POSTGRES else '?'
+        
+        # Get both possible identifiers
+        uid = session.get('user_id')
+        sid = session.get('cv_id', '')
+        
+        # 3 Placeholders = 3 Values in the tuple
+        query = f'''
+            DELETE FROM applications 
+            WHERE id = {PL} 
+              AND (user_id = {PL} OR user_id = {PL} OR user_id = '' OR user_id = 'anonymous')
+        '''
+        
+        cur.execute(query, (app_id, uid, sid))
+        
         conn.commit()
+        cur.close()
         conn.close()
         return jsonify({'status': 'ok'})
     except Exception as e:
+        # Adding a print here helps you debug in the Render logs
+        print(f"DELETE ERROR: {e}") 
         return jsonify({'status': 'error', 'message': str(e)})
 
 
@@ -1190,26 +1295,29 @@ def account_identify():
     import sqlite3, uuid, re as _re
     data  = request.get_json() or {}
     email = data.get('email', '').strip().lower()
+    PL = '%s' if USE_POSTGRES else '?'
     if not email or not _re.match(r'[^@]+@[^@]+\.[^@]+', email):
         return jsonify({'status': 'error', 'message': 'Valid email required'})
     name = data.get('name', '').strip()
     try:
         conn = _tracker_db()
+        cur = conn.cursor()
         # Upsert user
         uid = str(uuid.uuid5(uuid.NAMESPACE_URL, email))
-        conn.execute('''INSERT INTO users (id, email, name) VALUES (?, ?, ?)
-                        ON CONFLICT(email) DO UPDATE SET last_seen=datetime('now','localtime'),
-                        name=CASE WHEN excluded.name != '' THEN excluded.name ELSE name END''',
-                     (uid, email, name))
+        query = f'''INSERT INTO users (id, email, name) VALUES ({PL}, {PL}, {PL})
+                    ON CONFLICT(email) DO UPDATE SET last_seen=datetime('now','localtime'),
+                    name=CASE WHEN excluded.name != '' THEN excluded.name ELSE name END'''
+        cur.execute(query, (uid, email, name))
         conn.commit()
         # Store in Flask session
         session['user_id']    = uid
         session['user_email'] = email
         # Migrate any anonymous applications to this user
         sid = session.get('cv_id', '')
-        conn.execute('UPDATE applications SET user_id=? WHERE user_id=? OR user_id=?',
-                     (uid, uid, sid))
+        query = f'UPDATE applications SET user_id={PL} WHERE user_id={PL} OR user_id={PL}'
+        cur.execute(query, (uid, uid, sid))
         conn.commit()
+        cur.close()
         conn.close()
         return jsonify({'status': 'ok', 'user_id': uid, 'email': email})
     except Exception as e:
@@ -1235,17 +1343,20 @@ def account_me():
 
 def _log_event(event: str, meta: dict = None, uid: str = None):
     """Fire-and-forget event log. Never raises."""
+    PL = '%s' if USE_POSTGRES else '?'
     try:
         from flask import has_request_context, request as _req
         conn = _tracker_db()
+        cur = conn.cursor()
         sid  = session.get('cv_id', '') if has_request_context() else ''
         uid  = uid or (session.get('user_id', '') if has_request_context() else '')
         ip   = _req.remote_addr if has_request_context() else ''
         ua   = _req.headers.get('User-Agent', '')[:200] if has_request_context() else ''
-        conn.execute(
-            "INSERT INTO events (user_id, session_id, event, meta, ip, ua) VALUES (?,?,?,?,?,?)",
-            (uid, sid, event, json.dumps(meta or {}), ip, ua)
-        )
+        query = f'''INSERT INTO events (user_id, session_id, event, meta, ip, ua) 
+                    VALUES ({PL}, {PL}, {PL}, {PL}, {PL}, {PL})'''
+        cur.execute(query, (uid, sid, event, json.dumps(meta or {}), ip, ua))
+        conn.commit()
+        cur.close()
         conn.commit()
         conn.close()
     except Exception:
@@ -1271,17 +1382,20 @@ def submit_feedback():
     rating  = data.get('rating')   # 1 = thumbs up, 0 = thumbs down
     message = data.get('message', '').strip()[:500]
     context = data.get('context', '').strip()[:200]
+    
     if rating not in (0, 1):
         return jsonify({'status': 'error', 'message': 'rating must be 0 or 1'})
     try:
         conn = _tracker_db()
-        uid  = session.get('user_id', '')
-        sid  = session.get('cv_id', '')
-        conn.execute(
-            "INSERT INTO feedback (user_id, session_id, rating, message, context) VALUES (?,?,?,?,?)",
-            (uid, sid, rating, message, context)
-        )
+        cur = conn.cursor()
+        PL = '%s' if USE_POSTGRES else '?'
+        uid  = session.get('user_id')
+        sid  = session.get('cv_id')
+        query = f'INSERT INTO feedback (user_id, session_id, rating, message, context) VALUES ({PL}, {PL}, {PL}, {PL}, {PL})'
+        cur.execute(query, (uid, sid, rating, message, context))
+        
         conn.commit()
+        cur.close()
         conn.close()
         _log_event('feedback_submitted', {'rating': rating})
         return jsonify({'status': 'ok'})
@@ -1310,36 +1424,59 @@ def auth_register():
 
     try:
         conn = _tracker_db()
-        existing = conn.execute('SELECT id, password_hash FROM users WHERE email=?', (email,)).fetchone()
+        cur = conn.cursor()
+        PL = '%s' if USE_POSTGRES else '?'
+
+        # 1. Check for existing user
+        query_check = f"SELECT id, password_hash FROM users WHERE email={PL}"
+        cur.execute(query_check, (email,))
+        existing = cur.fetchone()
+
         if existing:
+            # Note: with DictCursor/Row, we can access by key 'password_hash'
             if existing['password_hash']:
+                cur.close()
                 conn.close()
                 return jsonify({'status': 'error', 'message': 'Email already registered. Please log in.'})
-            # Upgrade soft-login account to full account
-            conn.execute('UPDATE users SET password_hash=?, name=CASE WHEN ? != "" THEN ? ELSE name END WHERE email=?',
-                         (pw_hash, name, name, email))
+            
+            # Upgrade soft-login account
+            query_upd = f'UPDATE users SET password_hash={PL}, name=CASE WHEN {PL} != "" THEN {PL} ELSE name END WHERE email={PL}'
+            cur.execute(query_upd, (pw_hash, name, name, email))
         else:
-            conn.execute('INSERT INTO users (id, email, name, password_hash) VALUES (?,?,?,?)',
-                         (uid, email, name, pw_hash))
+            # Create new user
+            query_ins = f'INSERT INTO users (id, email, name, password_hash) VALUES ({PL}, {PL}, {PL}, {PL})'
+            cur.execute(query_ins, (uid, email, name, pw_hash))
+        
         conn.commit()
-        # Migrate session applications
+
+        # 2. Migrate session applications to the new user ID
         sid = session.get('cv_id', '')
-        conn.execute('UPDATE applications SET user_id=? WHERE user_id=? OR user_id=?', (uid, uid, sid))
+        query_mig = f'UPDATE applications SET user_id={PL} WHERE user_id={PL} OR user_id={PL}'
+        cur.execute(query_mig, (uid, uid, sid))
+        
         conn.commit()
+        cur.close()
         conn.close()
+
+        # Update Session
         session['user_id']    = uid
         session['user_email'] = email
         session['user_name']  = name
-        # If they uploaded a CV before registering, persist it now
-        sid = session.get('cv_id')
-        existing_cv = _get_session_cv(sid) if sid else None
+
+        # 3. Handle CV persistence (Ensure these helper functions are also updated!)
+        sid_cv = session.get('cv_id')
+        existing_cv = _get_session_cv(sid_cv) if sid_cv else None
         if existing_cv:
             _persist_cv_to_db(uid, existing_cv)
-        _log_event('register', {'email': email})
-        return jsonify({'status': 'ok', 'user_id': uid, 'email': email, 'name': name})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
 
+        _log_event('register', {'email': email})
+        
+        return jsonify({'status': 'ok', 'user_id': uid, 'email': email, 'name': name})
+        
+    except Exception as e:
+        import traceback
+        print(f"REGISTRATION ERROR: {traceback.format_exc()}")
+        return jsonify({'status': 'error', 'message': str(e)})
 
 @app.route('/auth/login', methods=['POST'])
 def auth_login():
@@ -1355,7 +1492,12 @@ def auth_login():
     pw_hash = hashlib.sha256(password.encode()).hexdigest()
     try:
         conn = _tracker_db()
-        user = conn.execute('SELECT * FROM users WHERE email=?', (email,)).fetchone()
+        cur = conn.cursor()
+        PL = '%s' if USE_POSTGRES else '?'
+        querry = f'SELECT id, email, name, password_hash FROM users WHERE email={PL}'
+        cur.execute(querry, (email,))
+        user = cur.fetchone()
+        cur.close()
         conn.close()
         if not user:
             return jsonify({'status': 'error', 'message': 'No account found for that email'})
@@ -1401,49 +1543,73 @@ def admin_stats():
     admin_key = os.environ.get('ADMIN_KEY', '')
     if not admin_key or key != admin_key:
         return jsonify({'status': 'error', 'message': 'Unauthorized'}), 403
+    
     try:
-        conn  = _tracker_db()
+        conn = _tracker_db()
+        cur = conn.cursor()
+        
         stats = {}
 
-        # Total counts
-        stats['total_users']        = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
-        stats['total_applications'] = conn.execute('SELECT COUNT(*) FROM applications').fetchone()[0]
-        stats['total_feedback']     = conn.execute('SELECT COUNT(*) FROM feedback').fetchone()[0]
-        stats['thumbs_up']          = conn.execute('SELECT COUNT(*) FROM feedback WHERE rating=1').fetchone()[0]
-        stats['thumbs_down']        = conn.execute('SELECT COUNT(*) FROM feedback WHERE rating=0').fetchone()[0]
+        # 1. Total counts
+        # Postgres fetchone() returns a list-like object; we grab index 0
+        cur.execute('SELECT COUNT(*) FROM users')
+        stats['total_users'] = cur.fetchone()[0]
+        
+        cur.execute('SELECT COUNT(*) FROM applications')
+        stats['total_applications'] = cur.fetchone()[0]
+        
+        cur.execute('SELECT COUNT(*) FROM feedback')
+        stats['total_feedback'] = cur.fetchone()[0]
+        
+        cur.execute('SELECT COUNT(*) FROM feedback WHERE rating=1')
+        stats['thumbs_up'] = cur.fetchone()[0]
+        
+        cur.execute('SELECT COUNT(*) FROM feedback WHERE rating=0')
+        stats['thumbs_down'] = cur.fetchone()[0]
 
-        # Events last 7 days
-        events = conn.execute(
-            '''SELECT event, COUNT(*) as cnt FROM events
-               WHERE created_at >= datetime(\'now\',\'-7 days\')
-               GROUP BY event ORDER BY cnt DESC'''
-        ).fetchall()
-        stats['events_7d'] = [dict(r) for r in events]
+        # 2. Events last 7 days (Handling Postgres vs SQLite dates)
+        if USE_POSTGRES:
+            event_query = '''SELECT event, COUNT(*) as cnt FROM events 
+                             WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' 
+                             GROUP BY event ORDER BY cnt DESC'''
+        else:
+            event_query = '''SELECT event, COUNT(*) as cnt FROM events 
+                             WHERE created_at >= datetime('now','-7 days') 
+                             GROUP BY event ORDER BY cnt DESC'''
+        
+        cur.execute(event_query)
+        stats['events_7d'] = [dict(r) for r in cur.fetchall()]
 
-        # Daily active sessions (unique session_ids) last 14 days
-        daily = conn.execute(
-            '''SELECT DATE(created_at) as day, COUNT(DISTINCT session_id) as sessions,
-                      COUNT(DISTINCT user_id) as users
-               FROM events WHERE created_at >= datetime(\'now\',\'-14 days\')
-               GROUP BY day ORDER BY day DESC'''
-        ).fetchall()
-        stats['daily_activity'] = [dict(r) for r in daily]
+        # 3. Daily active sessions (last 14 days)
+        if USE_POSTGRES:
+            daily_query = '''SELECT created_at::date as day, COUNT(DISTINCT session_id) as sessions, 
+                             COUNT(DISTINCT user_id) as users 
+                             FROM events WHERE created_at >= CURRENT_DATE - INTERVAL '14 days' 
+                             GROUP BY day ORDER BY day DESC'''
+        else:
+            daily_query = '''SELECT DATE(created_at) as day, COUNT(DISTINCT session_id) as sessions, 
+                             COUNT(DISTINCT user_id) as users 
+                             FROM events WHERE created_at >= datetime('now','-14 days') 
+                             GROUP BY day ORDER BY day DESC'''
+        
+        cur.execute(daily_query)
+        stats['daily_activity'] = [dict(r) for r in cur.fetchall()]
 
-        # Recent feedback
-        fb = conn.execute(
-            'SELECT rating, message, context, created_at FROM feedback ORDER BY created_at DESC LIMIT 20'
-        ).fetchall()
-        stats['recent_feedback'] = [dict(r) for r in fb]
+        # 4. Recent feedback
+        cur.execute('SELECT rating, message, context, created_at FROM feedback ORDER BY created_at DESC LIMIT 20')
+        stats['recent_feedback'] = [dict(r) for r in cur.fetchall()]
 
-        # Recent registrations
-        users = conn.execute(
-            'SELECT email, name, created_at, last_seen FROM users ORDER BY created_at DESC LIMIT 20'
-        ).fetchall()
-        stats['recent_users'] = [dict(r) for r in users]
+        # 5. Recent registrations
+        cur.execute('SELECT email, name, created_at, last_seen FROM users ORDER BY created_at DESC LIMIT 20')
+        stats['recent_users'] = [dict(r) for r in cur.fetchall()]
 
+        cur.close()
         conn.close()
         return jsonify({'status': 'ok', **stats})
+        
     except Exception as e:
+        import traceback
+        print(f"ADMIN STATS ERROR: {traceback.format_exc()}")
         return jsonify({'status': 'error', 'message': str(e)})
 
 # ── HTML Template ──────────────────────────────────────────────────────────────
