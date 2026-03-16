@@ -239,10 +239,15 @@ def run_pipeline(raw_text: str, cv_override: dict | None = None) -> dict:
 # Flask URL (set at page load as href), clicking it is a normal link click,
 # Flask builds the Yahoo URL and returns a redirect. No JS needed at all.────
 
-@app.route('/admin/dashboard')
-def admin_view():
-    # This just returns the HTML file
-    return render_template('admin.html')
+# @app.route('/admin/dashboard')
+# def admin_view():
+#     # This just returns the HTML file
+#     return render_template('admin.html')
+
+@app.route('/admin-panel')
+def serve_admin_panel():
+    # This manually sends the file from your static folder
+    return send_from_directory('static', 'admin.html')
 
 @app.route('/')
 def landing():
